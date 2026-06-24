@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+  <title>Clauled</title>
+  <style>
+    :root {
+      --bg: #f5f5f0;
+      --card: #fff;
+      --border: #e2e2dc;
+      --text: #1a1a18;
+      --muted: #6b6b65;
+      --dim: #b0b0a8;
+      --accent: #1a6ef5;
+      --green: #16a34a;
+      --green-bg: #f0fdf4;
+      --amber: #d97706;
+      --amber-bg: #fffbeb;
+      --red: #dc2626;
+      --red-bg: #fef2f2;
+      --purple: #7c3aed;
+      --purple-bg: #f5f3ff;
+      --r: 14px;
+      --rs: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding-bottom: 52px
+    }
+
+    .topbar {
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 10
+    }
+
+    .tbl {
+      display: flex;
+      align-items: center;
+      gap: 9px
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--dim)
+    }
+
+    .dot.on {
+      background: var(--green);
+      box-shadow: 0 0 0 3px rgba(22, 163, 74, .15)
+    }
+
+    .topbar h1 {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -.01em
+    }
+
+    .topbar-ip {
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    #ipBanner {
+      display: none;
+      background: var(--green-bg);
+      border-bottom: 1px solid rgba(22, 163, 74, .2);
+      padding: 10px 18px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--green)
+    }
+
+    .page {
+      padding: 16px;
+      max-width: 480px;
+      margin: 0 auto
+    }
+
+    /* Section label */
+    .sec {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 20px 0 14px 2px
+    }
+
+    .sec>span {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 13px 5px 11px;
+      border-radius: 999px;
+      background: #e3e0d3;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: #5a5340
+    }
+
+    .sec>span::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #b5704a
+    }
+
+    .sec::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: #d8d5c8
+    }
+
+    /* Usage grid */
+    .sub-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+      margin-bottom: 10px
+    }
+
+    .sub-cell {
+      padding: 13px 12px;
+      border-right: 1px solid var(--border)
+    }
+
+    .sub-cell:last-child {
+      border-right: none
+    }
+
+    .sub-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 4px
+    }
+
+    .sub-val {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -.02em
+    }
+
+    .sub-reset {
+      font-size: 11px;
+      color: var(--dim);
+      margin-top: 3px
+    }
+
+    .sbar {
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+      margin-top: 8px;
+      overflow: hidden
+    }
+
+    .sbar-fill {
+      height: 100%;
+      border-radius: 2px;
+      background: #7c3aed;
+      transition: width .5s
+    }
+
+    /* Sonnet row — spans full width */
+    .sonnet-row {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 13px 12px;
+      margin-bottom: 18px;
+      display: none
+    }
+
+    .sonnet-row.visible {
+      display: block
+    }
+
+    /* Card */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      overflow: hidden;
+      margin-bottom: 10px
+    }
+
+    .irow {
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--border)
+    }
+
+    .irow:last-child {
+      border-bottom: none
+    }
+
+    .ilabel {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      margin-bottom: 6px
+    }
+
+    .ihint {
+      font-size: 12px;
+      color: var(--dim);
+      margin-top: 5px;
+      line-height: 1.5
+    }
+
+    .ihint code {
+      background: rgba(0, 0, 0, .06);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 11px;
+      font-family: monospace
+    }
+
+    input[type=text],
+    input[type=password],
+    select,
+    textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--rs);
+      color: var(--text);
+      font-size: 14px;
+      font-family: inherit;
+      padding: 10px 12px;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      transition: border-color .15s;
+      resize: none
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--accent)
+    }
+
+    input::placeholder,
+    textarea::placeholder {
+      color: var(--dim)
+    }
+
+    select option {
+      background: #fff
+    }
+
+    /* Toggle rows */
+    .trow {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      gap: 12px
+    }
+
+    .trow:last-child {
+      border-bottom: none
+    }
+
+    .tinfo {
+      flex: 1
+    }
+
+    .tname {
+      font-size: 15px;
+      font-weight: 500
+    }
+
+    .tdesc {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+      line-height: 1.4
+    }
+
+    .sw {
+      position: relative;
+      width: 48px;
+      height: 28px;
+      flex-shrink: 0
+    }
+
+    .sw input {
+      display: none
+    }
+
+    .sw-track {
+      position: absolute;
+      inset: 0;
+      border-radius: 14px;
+      background: var(--border);
+      cursor: pointer;
+      transition: background .2s
+    }
+
+    .sw-thumb {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, .2);
+      transition: transform .2s;
+      pointer-events: none
+    }
+
+    .sw input:checked+.sw-track {
+      background: var(--accent)
+    }
+
+    .sw input:checked~.sw-thumb {
+      transform: translateX(20px)
+    }
+
+    /* Info box */
+    .info-box {
+      background: var(--purple-bg);
+      border: 1px solid rgba(124, 58, 237, .2);
+      border-radius: var(--rs);
+      padding: 13px 15px;
+      font-size: 13px;
+      color: var(--purple);
+      line-height: 1.6
+    }
+
+    .info-box code {
+      background: rgba(124, 58, 237, .12);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 12px;
+      font-family: monospace
+    }
+
+    .info-box strong {
+      font-weight: 600
+    }
+
+    .token-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      margin-top: 6px
+    }
+
+    .token-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--dim);
+      flex-shrink: 0
+    }
+
+    .token-dot.ok {
+      background: var(--green)
+    }
+
+    /* Buttons */
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 15px;
+      border: none;
+      border-radius: var(--r);
+      font-size: 16px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s
+    }
+
+    .btn:active {
+      transform: scale(.98);
+      opacity: .85
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff
+    }
+
+    .btn-secondary {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text)
+    }
+
+    .btn-danger {
+      background: var(--red-bg);
+      color: var(--red);
+      border: 1px solid rgba(220, 38, 38, .2)
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px
+    }
+
+    .btn-row .btn {
+      flex: 1;
+      padding: 13px;
+      font-size: 15px
+    }
+
+    .banner {
+      background: var(--amber-bg);
+      border: 1px solid rgba(217, 119, 6, .25);
+      border-radius: var(--rs);
+      padding: 12px 14px;
+      font-size: 13px;
+      color: var(--amber);
+      margin-bottom: 16px;
+      display: none
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: var(--text);
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 30px;
+      font-size: 14px;
+      font-weight: 500;
+      transition: transform .25s;
+      z-index: 99;
+      white-space: nowrap
+    }
+
+    .toast.show {
+      transform: translateX(-50%) translateY(0)
+    }
+
+    .toast.ok {
+      background: var(--green)
+    }
+
+    .toast.err {
+      background: var(--red)
+    }
+
+    .spin {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, .3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg)
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="topbar">
+    <div class="tbl">
+      <div class="dot" id="dot"></div>
+      <h1>Clauled</h1>
+    </div>
+    <div class="topbar-ip" id="topIP"></div>
+  </div>
+
+  <p id="ipBanner">Device IP: <strong id="ipBannerVal"></strong></p>
+
+  <div class="page">
+
+    <h2 class="sec"><span>Usage</span></h2>
+
+    <!-- 5h + 7d always shown -->
+    <div class="sub-grid">
+      <div class="sub-cell">
+        <p class="sub-label">Current session</p>
+        <div class="sub-val" id="sub5h">--</div>
+        <div class="sub-reset" id="reset5h"></div>
+        <div class="sbar">
+          <div class="sbar-fill" id="b5h" style="width:0"></div>
+        </div>
+      </div>
+      <div class="sub-cell">
+        <p class="sub-label">Weekly all models</p>
+        <div class="sub-val" id="sub7d">--</div>
+        <div class="sub-reset" id="reset7d"></div>
+        <div class="sbar">
+          <div class="sbar-fill" id="b7d" style="width:0"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sonnet weekly — shown only when enabled -->
+    <div class="sonnet-row" id="sonnetRow">
+      <p class="sub-label">Weekly Sonnet only</p>
+      <div class="sub-val" id="subSonnet">--</div>
+      <div class="sub-reset" id="resetSonnet"></div>
+      <div class="sbar">
+        <div class="sbar-fill" id="bSonnet" style="width:0"></div>
+      </div>
+    </div>
+
+    <p class="banner" id="banner">WiFi credentials changed. The device will reboot and reconnect.</p>
+
+    <h2 class="sec"><span>WiFi</span></h2>
+    <div class="card">
+      <div class="irow">
+        <label class="ilabel">Network (SSID)</label>
+        <input type="text" id="wifiSSID" placeholder="MyNetwork" autocomplete="off" autocorrect="off"
+          spellcheck="false">
+      </div>
+      <div class="irow">
+        <label class="ilabel">Password</label>
+        <input type="password" id="wifiPass" placeholder="Leave blank to keep current" autocomplete="new-password">
+      </div>
+    </div>
+
+    <h2 class="sec"><span>Claude OAuth token</span></h2>
+    <div class="card">
+      <div class="irow">
+        <p class="info-box">
+          <strong>How to get your token:</strong><br>
+          1. Install Claude Code on your computer<br>
+          2. Run <code>claude setup-token</code> in a terminal<br>
+          3. Log in through the browser when prompted<br>
+          4. Copy the token it prints<br><br>
+          It starts with <code>sk-ant-oat01-</code> and lasts one year. Requires a Claude Pro, Max, Team, or Enterprise
+          plan.
+        </p>
+      </div>
+      <div class="irow">
+        <label class="ilabel">Access token</label>
+        <textarea id="oauthAccess" rows="3" placeholder="sk-ant-oat01-..." autocomplete="off"
+          spellcheck="false"></textarea>
+        <div class="token-status" id="accessStatus"></div>
+        <p class="ihint">Leave blank to keep the current token.</p>
+      </div>
+      <div class="irow">
+        <label class="ilabel">Refresh token (optional)</label>
+        <textarea id="oauthRefresh" rows="2" placeholder="sk-ant-ort01-... (optional)" autocomplete="off"
+          spellcheck="false"></textarea>
+        <div class="token-status" id="refreshStatus"></div>
+        <p class="ihint">If set, the device refreshes the access token automatically when it expires. Found in
+          <code>~/.claude/.credentials.json</code> as <code>refreshToken</code>.</p>
+      </div>
+    </div>
+
+    <h2 class="sec"><span>Polling and display</span></h2>
+    <div class="card">
+      <div class="irow">
+        <label class="ilabel">Poll interval</label>
+        <select id="pollInterval">
+          <option value="30">Every 30 seconds</option>
+          <option value="60">Every 60 seconds</option>
+          <option value="120">Every 2 minutes</option>
+          <option value="300">Every 5 minutes</option>
+        </select>
+      </div>
+      <div class="irow">
+        <label class="ilabel">Page cycle time</label>
+        <select id="cycleTime">
+          <option value="3">3 seconds</option>
+          <option value="5">5 seconds</option>
+          <option value="8">8 seconds</option>
+          <option value="0">Manual (BOOT button)</option>
+        </select>
+      </div>
+    </div>
+
+    <h2 class="sec"><span>Show on screen</span></h2>
+    <div class="card">
+      <div class="trow">
+        <div class="tinfo">
+          <p class="tname">Weekly Sonnet only</p>
+          <p class="tdesc">Separate Sonnet weekly bucket for Max plan users</p>
+        </div>
+        <label class="sw"><input type="checkbox" id="showWeeklySonnet" onchange="toggleSonnetRow(this.checked)">
+          <div class="sw-track"></div>
+          <div class="sw-thumb"></div>
+        </label>
+      </div>
+      <div class="trow">
+        <div class="tinfo">
+          <p class="tname">Device uptime</p>
+          <p class="tdesc">Time since last boot</p>
+        </div>
+        <label class="sw"><input type="checkbox" id="showUptime">
+          <div class="sw-track"></div>
+          <div class="sw-thumb"></div>
+        </label>
+      </div>
+    </div>
+
+    <h2 class="sec"><span>Actions</span></h2>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="pollBtn" onclick="pollNow()">Poll now</button>
+      <button class="btn btn-secondary" onclick="loadStatus()">Refresh</button>
+    </div>
+    <button class="btn btn-primary" id="saveBtn" onclick="saveConfig()">Save settings</button>
+    <br>
+    <button class="btn btn-danger" style="margin-top:10px" onclick="confirmReset()">Factory reset</button>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    function fmtPct(v) { return (v != null && v >= 0) ? v + '%' : '--' }
+
+    function toggleSonnetRow(on) {
+      document.getElementById('sonnetRow').classList.toggle('visible', on);
+    }
+
+    async function loadStatus() {
+      try {
+        const d = await fetch('/status').then(r => r.json());
+        document.getElementById('dot').className = 'dot on';
+        document.getElementById('topIP').textContent = d.ip || '';
+        if (d.ip && d.ip !== '192.168.4.1') {
+          document.getElementById('ipBanner').style.display = 'block';
+          document.getElementById('ipBannerVal').textContent = d.ip;
+        }
+        document.getElementById('sub5h').textContent = fmtPct(d.unified5hPct);
+        document.getElementById('sub7d').textContent = fmtPct(d.unified7dPct);
+        document.getElementById('subSonnet').textContent = fmtPct(d.unified7dSonnetPct);
+
+        const fmt = (s, prefix) => (s && s !== '--') ? prefix + s : '';
+        document.getElementById('reset5h').textContent = fmt(d.reset5h, 'Resets in ');
+        document.getElementById('reset7d').textContent = fmt(d.reset7d, 'Resets ');
+        document.getElementById('resetSonnet').textContent = fmt(d.reset7dSonnet, 'Resets ');
+
+        document.getElementById('b5h').style.width = (d.unified5hPct >= 0 ? d.unified5hPct : 0) + '%';
+        document.getElementById('b7d').style.width = (d.unified7dPct >= 0 ? d.unified7dPct : 0) + '%';
+        document.getElementById('bSonnet').style.width = (d.unified7dSonnetPct >= 0 ? d.unified7dSonnetPct : 0) + '%';
+      } catch { document.getElementById('dot').className = 'dot' }
+    }
+
+    function tokenStatus(id, has, label) {
+      const el = document.getElementById(id);
+      el.innerHTML = has
+        ? `<span class="token-dot ok"></span><span style="color:var(--green)">${label} saved</span>`
+        : `<span class="token-dot"></span><span style="color:var(--dim)">No ${label} saved</span>`;
+    }
+
+    async function loadConfig() {
+      try {
+        const c = await fetch('/config').then(r => r.json());
+        document.getElementById('wifiSSID').value = c.wifiSSID || '';
+        document.getElementById('pollInterval').value = c.pollInterval || 60;
+        document.getElementById('cycleTime').value = c.cycleTime || 5;
+        tokenStatus('accessStatus', c.hasOauthAccess, 'access token');
+        tokenStatus('refreshStatus', c.hasOauthRefresh, 'refresh token');
+        document.getElementById('showWeeklySonnet').checked = !!c.showWeeklySonnet;
+        document.getElementById('showUptime').checked = !!c.showUptime;
+        toggleSonnetRow(!!c.showWeeklySonnet);
+      } catch { toast('Could not load config', 'err') }
+    }
+
+    async function saveConfig() {
+      const btn = document.getElementById('saveBtn');
+      btn.innerHTML = '<span class="spin"></span>'; btn.disabled = true;
+      const body = {
+        wifiSSID: document.getElementById('wifiSSID').value.trim(),
+        wifiPass: document.getElementById('wifiPass').value,
+        oauthAccess: document.getElementById('oauthAccess').value.trim(),
+        oauthRefresh: document.getElementById('oauthRefresh').value.trim(),
+        pollInterval: +document.getElementById('pollInterval').value,
+        cycleTime: +document.getElementById('cycleTime').value,
+        showWeeklySonnet: document.getElementById('showWeeklySonnet').checked,
+        showUptime: document.getElementById('showUptime').checked,
+      };
+
+      const wifiBeingSet = body.wifiSSID.length > 0 || body.wifiPass.length > 0;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), wifiBeingSet ? 4000 : 10000);
+
+      try {
+        const r = await fetch('/config', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body), signal: ctrl.signal
+        });
+        clearTimeout(timer);
+        const d = await r.json();
+        if (d.ok) {
+          if (d.reboot) { document.getElementById('banner').style.display = 'block'; toast('Saved. Device is rebooting', 'ok') }
+          else { toast('Saved', 'ok'); await loadConfig(); }
+        } else toast('Save failed', 'err');
+      } catch (e) {
+        clearTimeout(timer);
+        if (wifiBeingSet) { document.getElementById('banner').style.display = 'block'; toast('Saved. Reconnecting to WiFi', 'ok') }
+        else toast('Error saving', 'err');
+      }
+      btn.innerHTML = 'Save settings'; btn.disabled = false;
+    }
+
+    async function pollNow() {
+      const btn = document.getElementById('pollBtn');
+      btn.innerHTML = '<span class="spin" style="border-top-color:var(--text)"></span>'; btn.disabled = true;
+      try { await fetch('/pollnow', { method: 'POST' }); await loadStatus(); toast('Polled', 'ok') }
+      catch { toast('Poll failed', 'err') }
+      btn.innerHTML = 'Poll now'; btn.disabled = false;
+    }
+
+    function confirmReset() {
+      if (!confirm('Erase all settings and return to setup mode?')) return;
+      fetch('/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wifiSSID: '', wifiPass: 'x', oauthAccess: 'x' })
+      });
+      toast('Resetting', 'ok');
+    }
+
+    function toast(msg, type = '') {
+      const t = document.getElementById('toast');
+      t.textContent = msg; t.className = 'toast' + (type ? ' ' + type : '');
+      t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2800);
+    }
+
+    loadConfig(); loadStatus(); setInterval(loadStatus, 10000);
+  </script>
+</body>
+</html>
