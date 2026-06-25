@@ -25,7 +25,7 @@ The claude.ai usage page is fine, but you have to go look at it. I wanted a thin
 
 ## Getting your token
 
-The device uses a Claude Code OAuth token to read your usage. To get one:
+The device authenticates using a Claude Code OAuth token. To get one:
 
 1. Install Claude Code if you do not have it yet: `npm install -g @anthropic-ai/claude-code`
 2. Run `claude setup-token` in a terminal
@@ -33,8 +33,6 @@ The device uses a Claude Code OAuth token to read your usage. To get one:
 4. Copy the token it prints to your terminal
 
 The token starts with `sk-ant-oat01-` and stays valid for a year. Copy it the moment you see it because it is not saved anywhere you can retrieve it from later.
-
-This requires again a Claude Pro, Max, Team, or Enterprise subscription!
 
 ## Setup
 
@@ -61,7 +59,7 @@ Open `src/main.cpp` and fill in the values near the top:
 #define OAUTH_CLIENT_ID "9d1c250a-..."
 ```
 
-The WiFi pair is what matters for skipping the portal. If both SSID and password are set, the device goes straight to your network on boot. The token can be left blank and entered later through the browser if you prefer. If the screen says "Add your token" after connecting, that is what it is waiting for.
+The WiFi pair is what matters for skipping the portal. If both SSID and password are set, the device connects straight to your network on boot. The token can be left blank and added later through the browser. If the screen says "Add your token" after connecting, that is what it is waiting for.
 
 To get the `OAUTH_CLIENT_ID`, run this in a terminal on any machine that has Claude Code installed:
 
@@ -75,7 +73,7 @@ console.log(id || 'not found');
 "
 ```
 
-This is the Claude Code application ID, not yours. Every Claude Code installation has the same value. It is not a secret, but Anthropic can change it between versions so extracting it from your own binary keeps things in sync. The build will refuse to compile if you leave it blank.
+This is the Claude Code application ID, not yours. Every installation has the same value. It is not a secret, but Anthropic can change it between versions so extracting it from your own binary keeps things in sync. The build will refuse to compile if you leave it blank.
 
 Leave the WiFi fields blank and it falls back to the portal, so both options work from the same build.
 
@@ -93,7 +91,7 @@ platformio.exe run --target upload      # upload the firmware
 platformio.exe device monitor           # watch serial output (optional)
 ```
 
-The erase step is worth doing the first time, or any time the device behaves unexpectedly. The device stores its config in flash, and a leftover file from a previous flash can quietly override your compile-time settings. If it keeps booting into setup mode when it should not, erase and reflash.
+The erase step is worth doing the first time, or any time the device behaves unexpectedly. The device stores its settings in flash, and a leftover file from a previous flash can quietly override your compile-time credentials. If it keeps booting into setup mode when it should not, erase and reflash.
 
 Run `uploadfs` at least once so the config page lands on the device. After that, `upload` is enough unless you change the page.
 
@@ -101,7 +99,7 @@ If the upload fails with a chip mismatch, check your board is set to `esp32-c3-d
 
 ## What shows on the screen
 
-Each metric gets its own page. The screen cycles through them on a timer, or you can flip through manually with the BOOT button on the board. A typical page looks like this:
+The screen always shows two bar pages and cycles through them automatically. You can also flip manually with the BOOT button on the board.
 
 ```
 Current session          16%
@@ -109,18 +107,20 @@ Current session          16%
        Resets in 1h 21m
 ```
 
-Title on the left, percentage on the right, bar fills as usage climbs, and the reset countdown sits centered underneath. The footer shows seconds since the last update and the device IP.
+Title on the left, percentage on the right, bar fills as usage climbs, and the reset countdown sits centered underneath. The footer shows the next poll countdown and the device IP.
 
-Every bar is a toggle in the config page so you only see what is relevant to your plan:
+The two main pages are always on:
 
 - Current session (the 5 hour rolling window)
 - Weekly, all models (7 day window)
-- Weekly, Sonnet only (separate bucket on Max plans)
-- Weekly, Opus only
-- Requests per minute and input tokens per minute (API rate limits, off by default)
-- Device uptime and next poll countdown
 
-Works on Pro and Max. The plan tier changes your limits, not which headers come back.
+There is one optional toggle in the config page:
+
+- Weekly, Sonnet only (separate bucket available on Max plans)
+
+If your plan does not return a usage percentage for a window, the bar shows the reset time instead so you still get useful information.
+
+Device uptime is also available as an optional toggle.
 
 ## Troubleshooting
 
@@ -132,11 +132,11 @@ Works on Pro and Max. The plan tier changes your limits, not which headers come 
 
 **Screen says "Add your token".** WiFi is working but no token is set. Open the device IP in a browser and paste your `sk-ant-oat01-` token into the config page.
 
-**Bars show dashes instead of numbers.** The token is not working. Open the serial monitor and look for `[poll] 5h=.. 7d=..`. If you see 401 errors instead, the token is wrong or has expired and needs replacing.
+**Bars show dashes instead of numbers.** The token is not working. Open the serial monitor and look for `[poll] 5h=.. 7d=..`. If you see 401 errors, the token is wrong or expired and needs replacing.
 
-**Reset countdown shows dashes.** The device syncs time over NTP when it connects to WiFi. If your network blocks NTP the countdown will not work, but the percentages and bars still do.
+**Reset countdown shows dashes.** The device syncs time over NTP when it connects to WiFi. If your network blocks NTP the countdown will not work, but the bars still show whatever data the API returns.
 
-**Save button spins forever when entering WiFi credentials.** When you save new WiFi details from the setup portal, the device reboots onto your home network straight away. The `ClaudeMonitor` network disappears with it, so the browser never gets a response. The page handles this and shows "Saved, reconnecting". Reconnect your own device to your home WiFi and open the IP address shown on the OLED screen.
+**Save button spins forever when entering WiFi credentials.** When you save new WiFi details from the setup portal, the device reboots and joins your home network. The `ClaudeMonitor` network disappears with it, so the browser never gets a response back. The page handles this and shows "Saved, reconnecting". Reconnect your device to your home WiFi and open the IP shown on the OLED.
 
 ## A note on the API
 
