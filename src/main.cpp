@@ -542,9 +542,9 @@ void handleStatus() {
   doc["unified5hPct"]     = unified5hPct;
   doc["unified7dPct"]     = unified7dPct;
   doc["unified7dSonnetPct"] = unified7dSonnetPct;
-  doc["reset5h"]          = reset5h;
-  doc["reset7d"]          = reset7d;
-  doc["reset7dSonnet"]    = reset7dSonnet;
+  doc["reset5h"]          = fmtEpoch(reset5h);
+  doc["reset7d"]          = fmtEpoch(reset7d);
+  doc["reset7dSonnet"]    = fmtEpoch(reset7dSonnet);
   doc["lastPollAgo"]      = (millis() - lastPoll) / 1000;
   doc["nextPollIn"]       = max(0L, (long)cfg.pollInterval - (long)((millis() - lastPoll) / 1000));
   String out; serializeJson(doc, out);

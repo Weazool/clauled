@@ -34,6 +34,8 @@ The device authenticates using a Claude Code OAuth token. To get one:
 
 The token starts with `sk-ant-oat01-` and stays valid for a year. Copy it the moment you see it because it is not saved anywhere you can retrieve it from later.
 
+Requires a Claude Pro, Max, Team, or Enterprise subscription.
+
 ## Setup
 
 Two options. Pick whichever suits you.
@@ -107,20 +109,54 @@ Current session          16%
        Resets in 1h 21m
 ```
 
-Title on the left, percentage on the right, bar fills as usage climbs, and the reset countdown sits centered underneath. The footer shows the next poll countdown and the device IP.
+Title on the left, percentage on the right, bar fills as usage climbs, and the reset countdown sits centered underneath. The footer shows the next poll countdown on the left and the device IP on the right.
 
 The two main pages are always on:
 
 - Current session (the 5 hour rolling window)
 - Weekly, all models (7 day window)
 
-There is one optional toggle in the config page:
+If your plan does not return a usage percentage for a window, the bar shows the reset time instead so you still get something useful.
 
-- Weekly, Sonnet only (separate bucket available on Max plans)
+## Config page
 
-If your plan does not return a usage percentage for a window, the bar shows the reset time instead so you still get useful information.
+Once the device is on your network, open its IP address in any browser. The page is mobile-friendly and works from your phone.
 
-Device uptime is also available as an optional toggle.
+### Usage
+
+![Usage section](docs/config-usage.png)
+
+At the top of the page you see live usage for both windows. Current session on the left, weekly all models on the right. The percentage and bar update every time you hit Refresh or Poll now. The reset time shows how long until that window resets.
+
+### WiFi
+
+![WiFi section](docs/config-wifi.png)
+
+Enter your home network name and password here. The SSID field pre-fills with the currently saved network. Leave the password blank to keep the existing one. Saving a new WiFi network reboots the device immediately.
+
+### Claude OAuth token
+
+![OAuth section](docs/config-oauth.png)
+
+Paste your `sk-ant-oat01-` token in the access token field. Once saved, the field shows "access token saved" in green so you can confirm it landed. Leave it blank when saving other settings to keep the existing token. The refresh token is optional and only needed if you want the device to renew the access token automatically when it expires.
+
+### Polling and display
+
+![Polling section](docs/config-polling.png)
+
+Poll interval controls how often the device calls the API. Every 60 seconds is the default and costs one minimal API call per minute. Page cycle time controls how quickly the OLED flips between pages. Set it to Manual if you prefer to use the BOOT button yourself.
+
+### Show on screen
+
+![Show on screen section](docs/config-screen.png)
+
+Weekly Sonnet only is for Max plan users who have a separate Sonnet bucket. Device uptime shows how long the device has been running since its last boot. Both are off by default.
+
+### Actions
+
+![Actions section](docs/config-actions.png)
+
+Poll now fires an immediate API call and refreshes the usage display. Refresh reloads the status from the device without polling the API again. Save settings writes your changes to flash. Factory reset wipes everything and returns the device to first-boot setup mode.
 
 ## Troubleshooting
 
