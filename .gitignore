@@ -3,3 +3,8 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Local configuration - holds the WiFi password and push key.
+# Literal path on purpose: a glob like secrets.h* would also swallow
+# secrets.h.example, which must stay tracked.
+src/secrets.h

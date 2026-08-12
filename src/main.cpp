@@ -1,25 +1,34 @@
-// Generated with Claude
-
 // ============================================================
-//  Clauled - Claude usage monitor for ESP32-C3 + SH1106 OLED
+//  Clauled - Claude usage display for ESP32-C3 + SH1106 OLED
 //
-//  Shows your Claude subscription usage (5h session + weekly)
-//  on a small OLED, read from the Anthropic API rate headers.
+//  This device holds NO Claude credentials and never contacts
+//  Anthropic. A pusher on your desktop POSTs usage and events to
+//  http://clauled.local/push over the LAN; the device just renders
+//  whatever it was last told. See API.md for the wire contract.
 //
-//  Fill in the values below before compiling.
+//  Configuration lives in src/secrets.h (gitignored).
 // ============================================================
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <LittleFS.h>
-#include <HTTPClient.h>
+#include <ESPmDNS.h>
 #include <ArduinoJson.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 #include <vector>
-#include <time.h>
+
+#include "secrets.h"
+#include "version.h"
+
+// Fail at build time rather than booting into a mode that no longer exists.
+static_assert(WIFI_SSID[0] != '\0',
+  "Set WIFI_SSID in src/secrets.h (copy src/secrets.h.example)");
+static_assert(WIFI_PASSWORD[0] != '\0',
+  "Set WIFI_PASSWORD in src/secrets.h");
+static_assert(CLAULED_PUSH_KEY[0] != '\0',
+  "Set CLAULED_PUSH_KEY in src/secrets.h - the push endpoint must not be unauthenticated");
 
 // ── Pins ──────────────────────────────────────────────────────
 #define SDA_PIN   4
@@ -31,173 +40,115 @@
 #define SCREEN_W   128
 #define SCREEN_H   64
 
+// ── Push limits ───────────────────────────────────────────────
+// A malformed or hostile push must not be able to exhaust heap.
+#define SCHEMA_VERSION   1
+#define PUSH_MAX_BODY    2048
+#define MAX_EVENTS       8
+#define EVENT_TEXT_MAX   40
+#define EVENT_TTL_S      300
+
 Adafruit_SH1106G display(SCREEN_W, SCREEN_H, &Wire, -1);
 WebServer server(80);
 
-// ============================================================
-//  USER CONFIG
-//  Fill in your credentials before compiling.
-//  Everything here can also be set later via the browser.
-// ============================================================
+// ── Pushed state ──────────────────────────────────────────────
+// resets_in arrives as seconds remaining, not an absolute time, so the
+// device needs no wall clock: we stamp millis() on receipt and count down
+// locally between pushes.
+struct Metric {
+  bool          known     = false;
+  float         pct       = -1;
+  long          resetsIn  = -1;
+  unsigned long stampedAt = 0;
 
-// WiFi - both must be set to skip the setup portal on first boot
-#define WIFI_SSID      ""
-#define WIFI_PASSWORD  ""
+  long remaining() const {
+    if (resetsIn < 0) return -1;
+    long elapsed = (long)((millis() - stampedAt) / 1000UL);
+    long r = resetsIn - elapsed;
+    return r > 0 ? r : 0;
+  }
+};
 
-// OAuth token from `claude setup-token` (sk-ant-oat01-...)
-// Leave blank to enter it later via the config page.
-#define OAUTH_TOKEN    ""
+Metric m5h, m7d, m7dSonnet;
 
-// OAuth client_id - this is the Claude Code CLI application ID, not yours.
-// Extract it from your local Claude Code binary:
-//
-//   node -e "
-//   const fs = require('fs');
-//   const b = fs.readFileSync(require('which').sync('claude'));
-//   const m = b.toString('latin1').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g);
-//   const id = m && m.find(x => x.startsWith('9d1c'));
-//   console.log(id || 'not found');
-//   "
-//
-// Paste the result below.
-#define OAUTH_CLIENT_ID ""
+struct Event {
+  String        type;
+  String        text;
+  unsigned long at = 0;
+};
+Event lastEvent;
+bool  hasEvent = false;
 
-// ── OAuth refresh endpoint ────────────────────────────────────
-#define OAUTH_REFRESH_URL "https://console.anthropic.com/api/oauth/token"
-
-// Fail at compile time if the client_id was not filled in
-static_assert(OAUTH_CLIENT_ID[0] != '\0',
-  "Fill in OAUTH_CLIENT_ID in src/main.cpp. "
-  "Extract it from your Claude Code binary using the command in the comment above.");
-
-// ── Config ────────────────────────────────────────────────────
-struct Config {
-  String wifiSSID      = WIFI_SSID;
-  String wifiPass      = WIFI_PASSWORD;
-  String oauthAccess   = OAUTH_TOKEN;
-  String oauthRefresh  = "";
-
-  int  pollInterval       = 60;
-  int  cycleTime          = 5;
-  bool showWeeklySonnet   = false;  // Sonnet-only weekly bucket (Max plans)
-  bool showUptime         = false;
-} cfg;
-
-// ── Live API data ─────────────────────────────────────────────
-long   reqLimit        = -1;
-long   reqRemaining    = -1;
-long   tokInLimit      = -1;
-long   tokInRemaining  = -1;
-
-int    unified5hPct       = -1;
-int    unified7dPct       = -1;
-int    unified7dSonnetPct = -1;
-String reset5h            = "";
-String reset7d            = "";
-String reset7dSonnet      = "";
+unsigned long lastPushMs  = 0;
+bool          everPushed  = false;
+String        deviceIP    = "";
 
 // ── Runtime ───────────────────────────────────────────────────
-int  currentPage  = 0;
-int  pageCount    = 0;
-bool wifiOk       = false;
-bool apMode       = false;
-bool timeSynced   = false;
-unsigned long lastPoll  = 0;
-unsigned long lastCycle = 0;
-String deviceIP = "";
+int           currentPage = 0;
+int           pageCount   = 0;
+unsigned long lastCycle   = 0;
+unsigned long lastDraw    = 0;
+
+// A missing display must not take the device down with it. Serving /push and
+// /health is the primary job; the screen is an output device for it.
+bool          displayOk   = false;
 
 // ── Page layout ───────────────────────────────────────────────
-enum PageType { PAGE_BAR, PAGE_ROWS };
-struct BarPage { String title; String valText; int pct; };
-struct RowPage { struct Row { String label; String value; }; std::vector<Row> rows; };
-struct Page    { PageType type; BarPage bar; RowPage rows; };
+enum PageType { PAGE_BAR, PAGE_ROWS, PAGE_EVENT };
+struct BarPage   { String title; String valText; int pct; };
+struct RowPage   { struct Row { String label; String value; }; std::vector<Row> rows; };
+struct EventPage { String title; String text; };
+struct Page      { PageType type; BarPage bar; RowPage rows; EventPage event; };
 std::vector<Page> pages;
 
 // ── Helpers ───────────────────────────────────────────────────
-String fmtLong(long v) {
-  if (v < 0)        return "--";
-  if (v >= 1000000) return String(v / 1000000) + "M";
-  if (v >= 1000)    return String(v / 1000)    + "k";
-  return String(v);
-}
-
 String fmtUptime() {
   unsigned long s = millis() / 1000;
   char buf[9];
   snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu",
-           (s/3600)%24, (s/60)%60, s%60);
+           (s / 3600) % 24, (s / 60) % 60, s % 60);
   return String(buf);
 }
 
-// Format a Unix epoch timestamp into a human-readable countdown.
-// Returns "1h 21m", "45m", "now", or "--" if NTP not synced yet.
-String fmtEpoch(const String& epochStr) {
-  if (epochStr.length() == 0) return "--";
-  if (!timeSynced) return "--";
-  long epoch = epochStr.toInt();
-  if (epoch <= 0) return "--";
-  time_t now = time(nullptr);
-  long secs = epoch - (long)now;
-  if (secs <= 0) return "now";
-  long h = secs / 3600;
+// "2d 3h" / "1h 21m" / "45m" / "30s" / "now" / "--"
+String fmtCountdown(long secs) {
+  if (secs <  0) return "--";
+  if (secs == 0) return "now";
+  long d = secs / 86400;
+  long h = (secs % 86400) / 3600;
   long m = (secs % 3600) / 60;
-  if (h > 48) {
-    char buf[16];
-    time_t t = (time_t)epoch;
-    struct tm* lt = localtime(&t);
-    strftime(buf, sizeof(buf), "%a %H:%M", lt);
-    return String(buf);
-  }
+  if (d > 0) return String(d) + "d " + String(h) + "h";
   if (h > 0) return String(h) + "h " + String(m) + "m";
-  return String(m) + "m";
+  if (m > 0) return String(m) + "m";
+  return String(secs) + "s";
 }
 
-int parseUtilFloat(const String& s) {
-  if (s.length() == 0) return -1;
-  return (int)constrain(s.toFloat() * 100.0f, 0.0f, 100.0f);
+String fmtAge(unsigned long ms) {
+  unsigned long s = ms / 1000;
+  if (s < 60)   return String(s) + "s";
+  if (s < 3600) return String(s / 60) + "m";
+  return String(s / 3600) + "h";
 }
 
-// ── OAuth token refresh ───────────────────────────────────────
-bool refreshOAuthToken() {
-  if (cfg.oauthRefresh.length() == 0) {
-    Serial.println("[oauth] no refresh token stored");
-    return false;
-  }
-  Serial.println("[oauth] refreshing access token...");
+bool dataStale() {
+  if (!everPushed) return true;
+  return ((millis() - lastPushMs) / 1000UL) > (unsigned long)STALE_AFTER_S;
+}
 
-  HTTPClient http;
-  http.begin(OAUTH_REFRESH_URL);
-  http.addHeader("Content-Type", "application/json");
+bool eventLive() {
+  if (!hasEvent) return false;
+  return ((millis() - lastEvent.at) / 1000UL) <= (unsigned long)EVENT_TTL_S;
+}
 
-  String body = "{\"grant_type\":\"refresh_token\","
-                "\"refresh_token\":\"" + cfg.oauthRefresh + "\","
-                "\"client_id\":\"" OAUTH_CLIENT_ID "\"}";
-
-  int code = http.POST(body);
-  bool ok = false;
-
-  if (code == 200) {
-    JsonDocument resp;
-    String payload = http.getString();
-    if (!deserializeJson(resp, payload)) {
-      String newAccess = resp["access_token"] | "";
-      if (newAccess.length() > 0) {
-        cfg.oauthAccess = newAccess;
-        JsonDocument saved;
-        File f = LittleFS.open("/config.json", "r");
-        if (f) { deserializeJson(saved, f); f.close(); }
-        saved["oauthAccess"] = cfg.oauthAccess;
-        f = LittleFS.open("/config.json", "w");
-        if (f) { serializeJson(saved, f); f.close(); }
-        Serial.println("[oauth] token refreshed and saved");
-        ok = true;
-      }
-    }
-  }
-
-  if (!ok) Serial.printf("[oauth] refresh failed HTTP %d\n", code);
-  http.end();
-  return ok;
+// Constant-time over the compared bytes. The length check leaks only the
+// key length, which is not secret.
+bool pushKeyOk(const String& given) {
+  const char* expect = CLAULED_PUSH_KEY;
+  size_t elen = strlen(expect);
+  if (given.length() != elen) return false;
+  uint8_t diff = 0;
+  for (size_t i = 0; i < elen; i++) diff |= (uint8_t)(given[i] ^ expect[i]);
+  return diff == 0;
 }
 
 // ── Page builder ─────────────────────────────────────────────
@@ -211,44 +162,44 @@ void addRowsPage(std::vector<RowPage::Row> rows) {
   pages.push_back(pg);
 }
 
+void addEventPage(const String& title, const String& text) {
+  Page pg; pg.type = PAGE_EVENT; pg.event = {title, text};
+  pages.push_back(pg);
+}
+
 void buildPages() {
   pages.clear();
 
-  // Helper: bar value is "X% used" when known, "Resets in Xh Ym" when only
-  // the reset time is available, or "--" when we have nothing.
-  auto barVal = [](int pct, const String& resetEpoch) -> String {
-    if (pct >= 0) return String(pct) + "% used";
-    String r = fmtEpoch(resetEpoch);
-    if (r != "--") return "Resets in " + r;
-    return "--";
+  auto pctOf   = [](const Metric& m) -> int {
+    return m.known ? (int)constrain(m.pct, 0.0f, 100.0f) : -1;
+  };
+  auto resetOf = [](const Metric& m) -> String {
+    long r = m.remaining();
+    return (r < 0) ? "--" : ("Resets in " + fmtCountdown(r));
   };
 
-  // Always shown
-  addBarPage("Current session",   barVal(unified5hPct, reset5h),       unified5hPct);
-  addBarPage("Weekly all models", barVal(unified7dPct, reset7d),       unified7dPct);
+  addBarPage("Current session",   resetOf(m5h), pctOf(m5h));
+  addBarPage("Weekly all models", resetOf(m7d), pctOf(m7d));
 
-  // Optional: Sonnet weekly (Max plans)
-  if (cfg.showWeeklySonnet) {
-    addBarPage("Weekly Sonnet", barVal(unified7dSonnetPct, reset7dSonnet), unified7dSonnetPct);
+  if (SHOW_WEEKLY_SONNET) {
+    addBarPage("Weekly Sonnet", resetOf(m7dSonnet), pctOf(m7dSonnet));
   }
 
-  // Optional text rows
-  std::vector<RowPage::Row> rows;
-  auto flush = [&]() { if (!rows.empty()) { addRowsPage(rows); rows.clear(); } };
-  auto pushRow = [&](const String& label, const String& value) {
-    rows.push_back({label, value});
-    if ((int)rows.size() >= 3) flush();
-  };
+  if (eventLive()) {
+    addEventPage(lastEvent.type.length() ? lastEvent.type : "Event", lastEvent.text);
+  }
 
-  if (cfg.showUptime) pushRow("Uptime", fmtUptime());
+  if (SHOW_UPTIME) {
+    addRowsPage({{"Uptime", fmtUptime()}});
+  }
 
-  flush();
   pageCount = pages.size();
   if (currentPage >= pageCount) currentPage = 0;
 }
 
 // ── OLED rendering ────────────────────────────────────────────
 void oledStatus(const char* l1, const char* l2 = "", const char* l3 = "") {
+  if (!displayOk) return;
   display.clearDisplay();
   display.setTextColor(SH110X_WHITE);
   display.setTextSize(1);
@@ -298,6 +249,28 @@ int drawBar(int y, const String& title, const String& valText, int p) {
   return y;
 }
 
+// Naive word wrap at 21 chars/line (6px font, 128px wide).
+void drawWrapped(int y, const String& text, int maxLines) {
+  const int perLine = 21;
+  String rest = text;
+  for (int line = 0; line < maxLines && rest.length(); line++) {
+    String chunk;
+    if ((int)rest.length() <= perLine) {
+      chunk = rest;
+      rest  = "";
+    } else {
+      int cut = rest.lastIndexOf(' ', perLine);
+      if (cut <= 0) cut = perLine;
+      chunk = rest.substring(0, cut);
+      rest  = rest.substring(cut);
+      rest.trim();
+    }
+    display.setCursor(0, y);
+    display.print(chunk);
+    y += 11;
+  }
+}
+
 void drawHeader(int page, int total) {
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
@@ -318,37 +291,43 @@ void drawFooter() {
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
 
-  // Left: next poll countdown
+  // Left: how long since the last accepted push. Stale is a normal
+  // overnight state (the pusher only runs while Claude Code is open),
+  // so it reads as information, not as an error.
   display.setCursor(0, 57);
-  long cd = (long)cfg.pollInterval - (long)((millis() - lastPoll) / 1000);
-  display.print("in " + String(max(0L, cd)) + "s");
+  String age = everPushed ? fmtAge(millis() - lastPushMs) : "no data";
+  display.print(dataStale() ? ("stale " + age) : age);
 
-  // Right: device IP
-  String ip = deviceIP.length() ? deviceIP : "192.168.4.1";
-  int16_t x1, y1; uint16_t w, h;
-  display.getTextBounds(ip, 0, 57, &x1, &y1, &w, &h);
-  display.setCursor(128 - (int)w, 57);
-  display.print(ip);
+  // Right: IP, still the quickest confirmation the device is on the network.
+  if (deviceIP.length()) {
+    int16_t x1, y1; uint16_t w, h;
+    display.getTextBounds(deviceIP, 0, 57, &x1, &y1, &w, &h);
+    display.setCursor(128 - (int)w, 57);
+    display.print(deviceIP);
+  }
 }
 
 void drawScreen() {
+  if (!displayOk) return;
   buildPages();
   display.clearDisplay();
 
-  if (wifiOk && cfg.oauthAccess.length() == 0) {
-    oledStatus("Add your token", "Open this IP:", deviceIP.c_str());
-    return;
-  }
-
-  if (pageCount == 0) {
-    oledStatus("No metrics.", "Enable some in:", deviceIP.c_str());
+  if (!everPushed) {
+    oledStatus("Waiting for data", CLAULED_HOSTNAME ".local", deviceIP.c_str());
     return;
   }
 
   Page& pg = pages[currentPage];
   drawHeader(currentPage, pageCount);
+
   if (pg.type == PAGE_BAR) {
     drawBar(12, pg.bar.title, pg.bar.valText, pg.bar.pct);
+  } else if (pg.type == PAGE_EVENT) {
+    display.setTextSize(1);
+    display.setTextColor(SH110X_WHITE);
+    display.setCursor(0, 13);
+    display.print(pg.event.title.substring(0, 21));
+    drawWrapped(26, pg.event.text, 2);
   } else {
     int y = 13;
     for (auto& row : pg.rows.rows) {
@@ -356,262 +335,161 @@ void drawScreen() {
       y += 14;
     }
   }
+
   drawFooter();
   display.display();
 }
 
-// ── API poll ─────────────────────────────────────────────────
-void doPoll(bool isRetry = false) {
-  HTTPClient http;
-  http.begin("https://api.anthropic.com/v1/messages");
-  http.addHeader("Content-Type",      "application/json");
-  http.addHeader("anthropic-version", "2023-06-01");
-  http.addHeader("Authorization",     "Bearer " + cfg.oauthAccess);
-
-  const char* hdrs[] = {
-    "anthropic-ratelimit-requests-limit",
-    "anthropic-ratelimit-requests-remaining",
-    "anthropic-ratelimit-tokens-limit",
-    "anthropic-ratelimit-tokens-remaining",
-    "anthropic-ratelimit-unified-5h-utilization",
-    "anthropic-ratelimit-unified-5h-reset",
-    "anthropic-ratelimit-unified-7d-utilization",
-    "anthropic-ratelimit-unified-7d-reset",
-    "anthropic-ratelimit-unified-7d_sonnet-utilization",
-    "anthropic-ratelimit-unified-7d_sonnet-reset",
-    "retry-after"
-  };
-  http.collectHeaders(hdrs, 11);
-
-  int code = http.POST(
-    "{\"model\":\"claude-haiku-4-5-20251001\","
-    "\"max_tokens\":1,"
-    "\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}"
-  );
-
-  Serial.printf("[poll] HTTP %d\n", code);
-
-  if (code == 401 && !isRetry) {
-    http.end();
-    if (refreshOAuthToken()) doPoll(true);
-    else oledStatus("Auth failed", "Update token in", "config page");
-    return;
-  }
-
-  if (code > 0 && code != 401) {
-    auto hdrLong = [&](const char* name) -> long {
-      String v = http.header(name);
-      return v.length() == 0 ? -1L : (long)v.toInt();
-    };
-    auto hdrStr = [&](const char* name) -> String {
-      return http.header(name);
-    };
-
-    reqLimit       = hdrLong("anthropic-ratelimit-requests-limit");
-    reqRemaining   = hdrLong("anthropic-ratelimit-requests-remaining");
-    tokInLimit     = hdrLong("anthropic-ratelimit-tokens-limit");
-    tokInRemaining = hdrLong("anthropic-ratelimit-tokens-remaining");
-
-    unified5hPct       = parseUtilFloat(hdrStr("anthropic-ratelimit-unified-5h-utilization"));
-    unified7dPct       = parseUtilFloat(hdrStr("anthropic-ratelimit-unified-7d-utilization"));
-    unified7dSonnetPct = parseUtilFloat(hdrStr("anthropic-ratelimit-unified-7d_sonnet-utilization"));
-    reset5h       = hdrStr("anthropic-ratelimit-unified-5h-reset");
-    reset7d       = hdrStr("anthropic-ratelimit-unified-7d-reset");
-    reset7dSonnet = hdrStr("anthropic-ratelimit-unified-7d_sonnet-reset");
-
-    Serial.printf("[poll] 5h=%d%%  7d=%d%%  sonnet=%d%%\n",
-      unified5hPct, unified7dPct, unified7dSonnetPct);
-  } else {
-    Serial.printf("[poll] error: %s\n", http.errorToString(code).c_str());
-  }
-
-  http.end();
-}
-
-void pollAPI() {
-  if (!wifiOk) return;
-  if (cfg.oauthAccess.length() == 0) {
-    Serial.println("[poll] skipped, no token set");
-    return;
-  }
-  oledStatus("Polling...", "api.anthropic.com");
-  doPoll();
-  lastPoll = millis();
-}
-
-// ── Config I/O ────────────────────────────────────────────────
-bool loadConfig() {
-  if (!LittleFS.exists("/config.json")) {
-    Serial.println("[cfg] no saved config, using compile-time values");
-    return cfg.wifiSSID.length() > 0 && cfg.wifiPass.length() > 0;
-  }
-  File f = LittleFS.open("/config.json", "r");
-  if (!f) return cfg.wifiSSID.length() > 0 && cfg.wifiPass.length() > 0;
-  JsonDocument doc;
-  if (deserializeJson(doc, f)) { f.close(); return false; }
-  f.close();
-
-  String s;
-  s = doc["wifiSSID"]    | ""; if (s.length()) cfg.wifiSSID    = s;
-  s = doc["wifiPass"]    | ""; if (s.length()) cfg.wifiPass    = s;
-  s = doc["oauthAccess"] | ""; if (s.length()) cfg.oauthAccess = s;
-  s = doc["oauthRefresh"]| ""; if (s.length()) cfg.oauthRefresh= s;
-
-  cfg.pollInterval     = doc["pollInterval"]     | cfg.pollInterval;
-  cfg.cycleTime        = doc["cycleTime"]        | cfg.cycleTime;
-  cfg.showWeeklySonnet = doc["showWeeklySonnet"] | cfg.showWeeklySonnet;
-  cfg.showUptime       = doc["showUptime"]       | cfg.showUptime;
-
-  return cfg.wifiSSID.length() > 0 && cfg.wifiPass.length() > 0;
-}
-
-void persistConfig() {
-  JsonDocument doc;
-  doc["wifiSSID"]        = cfg.wifiSSID;
-  doc["wifiPass"]        = cfg.wifiPass;
-  doc["oauthAccess"]     = cfg.oauthAccess;
-  doc["oauthRefresh"]    = cfg.oauthRefresh;
-  doc["pollInterval"]    = cfg.pollInterval;
-  doc["cycleTime"]       = cfg.cycleTime;
-  doc["showWeeklySonnet"]= cfg.showWeeklySonnet;
-  doc["showUptime"]      = cfg.showUptime;
-  File f = LittleFS.open("/config.json", "w");
-  if (f) { serializeJson(doc, f); f.close(); }
-}
-
 // ── HTTP handlers ─────────────────────────────────────────────
-void handleRoot() {
-  File f = LittleFS.open("/index.html", "r");
-  if (!f) { server.send(500, "text/plain", "index.html missing - re-upload LittleFS"); return; }
-  server.streamFile(f, "text/html");
-  f.close();
+void mergeMetric(Metric& m, JsonVariantConst j) {
+  if (j.isNull()) return;
+  if (!j["pct"].isNull())       { m.pct = j["pct"].as<float>(); m.known = true; }
+  if (!j["resets_in"].isNull()) { m.resetsIn = j["resets_in"].as<long>(); }
+  m.stampedAt = millis();
 }
 
-void handleGetConfig() {
-  JsonDocument doc;
-  doc["wifiSSID"]        = cfg.wifiSSID;
-  doc["wifiPass"]        = "";
-  doc["hasOauthAccess"]  = cfg.oauthAccess.length() > 0;
-  doc["hasOauthRefresh"] = cfg.oauthRefresh.length() > 0;
-  doc["pollInterval"]    = cfg.pollInterval;
-  doc["cycleTime"]       = cfg.cycleTime;
-  doc["showWeeklySonnet"]= cfg.showWeeklySonnet;
-  doc["showUptime"]      = cfg.showUptime;
-  String out; serializeJson(doc, out);
-  server.send(200, "application/json", out);
-}
-
-void handleSaveConfig() {
-  if (!server.hasArg("plain")) { server.send(400, "text/plain", "no body"); return; }
-  JsonDocument doc;
-  if (deserializeJson(doc, server.arg("plain"))) { server.send(400, "text/plain", "bad JSON"); return; }
-
-  bool wifiChanged       = false;
-  String newSSID         = doc["wifiSSID"]      | "";
-  String newPass         = doc["wifiPass"]       | "";
-  String newOauthAccess  = doc["oauthAccess"]    | "";
-  String newOauthRefresh = doc["oauthRefresh"]   | "";
-
-  if (newSSID.length()          && newSSID != cfg.wifiSSID) { cfg.wifiSSID  = newSSID; wifiChanged = true; }
-  if (newPass.length())                                      { cfg.wifiPass  = newPass; wifiChanged = true; }
-  if (newOauthAccess.length())   cfg.oauthAccess  = newOauthAccess;
-  if (newOauthRefresh.length())  cfg.oauthRefresh = newOauthRefresh;
-
-  cfg.pollInterval     = doc["pollInterval"]     | cfg.pollInterval;
-  cfg.cycleTime        = doc["cycleTime"]        | cfg.cycleTime;
-  cfg.showWeeklySonnet = doc["showWeeklySonnet"] | cfg.showWeeklySonnet;
-  cfg.showUptime       = doc["showUptime"]       | cfg.showUptime;
-
-  persistConfig();
-
-  server.send(200, "application/json",
-    "{\"ok\":true,\"reboot\":" + String(wifiChanged ? "true":"false") + "}");
-
-  if (wifiChanged) {
-    oledStatus("Rebooting...", "WiFi updated.");
-    delay(1500);
-    ESP.restart();
-  }
-}
-
-void handleStatus() {
-  JsonDocument doc;
-  doc["ip"]               = deviceIP;
-  doc["wifiSSID"]         = WiFi.SSID();
-  doc["uptime"]           = millis() / 1000;
-  doc["unified5hPct"]     = unified5hPct;
-  doc["unified7dPct"]     = unified7dPct;
-  doc["unified7dSonnetPct"] = unified7dSonnetPct;
-  doc["reset5h"]          = fmtEpoch(reset5h);
-  doc["reset7d"]          = fmtEpoch(reset7d);
-  doc["reset7dSonnet"]    = fmtEpoch(reset7dSonnet);
-  doc["lastPollAgo"]      = (millis() - lastPoll) / 1000;
-  doc["nextPollIn"]       = max(0L, (long)cfg.pollInterval - (long)((millis() - lastPoll) / 1000));
-  String out; serializeJson(doc, out);
-  server.send(200, "application/json", out);
-}
-
-void handlePollNow() {
-  pollAPI(); drawScreen();
-  server.send(200, "application/json", "{\"ok\":true}");
-}
-
-// ── Network init ──────────────────────────────────────────────
-void startAPMode() {
-  apMode = true;
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP("ClaudeMonitor");
-  deviceIP = "192.168.4.1";
-  server.on("/",       HTTP_GET,  handleRoot);
-  server.on("/config", HTTP_GET,  handleGetConfig);
-  server.on("/config", HTTP_POST, handleSaveConfig);
-  server.on("/status", HTTP_GET,  handleStatus);
-  server.begin();
-  oledStatus("Setup mode", "Join WiFi:", "ClaudeMonitor");
-  delay(2000);
-  oledStatus("Then open:", "192.168.4.1");
-}
-
-void startStationMode() {
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true);
-  delay(100);
-  Serial.printf("[wifi] connecting to '%s'\n", cfg.wifiSSID.c_str());
-  WiFi.begin(cfg.wifiSSID.c_str(), cfg.wifiPass.c_str());
-  oledStatus("Connecting...", cfg.wifiSSID.c_str());
-  unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
-    delay(300);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[wifi] failed, starting AP");
-    startAPMode();
+void handlePush() {
+  if (!pushKeyOk(server.header("X-Clauled-Key"))) {
+    Serial.println("[push] rejected: bad or missing key");
+    server.send(401, "application/json", "{\"error\":\"bad key\"}");
     return;
   }
 
-  wifiOk   = true;
+  if (!server.hasArg("plain")) {
+    server.send(400, "application/json", "{\"error\":\"no body\"}");
+    return;
+  }
+
+  String body = server.arg("plain");
+  if (body.length() > PUSH_MAX_BODY) {
+    server.send(413, "application/json", "{\"error\":\"body too large\"}");
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) {
+    server.send(400, "application/json", "{\"error\":\"bad JSON\"}");
+    return;
+  }
+
+  // Read through a const view so a lookup can never insert into the document.
+  JsonObjectConst root = doc.as<JsonObjectConst>();
+
+  int v = root["v"] | SCHEMA_VERSION;
+  if (v != SCHEMA_VERSION) {
+    // Fail loudly rather than silently misreading a future schema.
+    server.send(400, "application/json", "{\"error\":\"unsupported schema version\"}");
+    return;
+  }
+
+  // Merge, never replace: a push carrying only events must not wipe the bars.
+  JsonVariantConst usage = root["usage"];
+  mergeMetric(m5h,       usage["five_hour"]);
+  mergeMetric(m7d,       usage["seven_day"]);
+  mergeMetric(m7dSonnet, usage["seven_day_sonnet"]);
+
+  JsonArrayConst evs = root["events"];
+  if (!evs.isNull()) {
+    int n = 0;
+    for (JsonObjectConst e : evs) {
+      if (++n > MAX_EVENTS) break;
+      lastEvent.type = String((const char*)(e["type"] | "")).substring(0, 21);
+      lastEvent.text = String((const char*)(e["text"] | "")).substring(0, EVENT_TEXT_MAX);
+      lastEvent.at   = millis();
+      hasEvent       = true;
+    }
+  }
+
+  lastPushMs = millis();
+  everPushed = true;
+
+  Serial.printf("[push] ok  5h=%s  7d=%s\n",
+    m5h.known ? String((int)m5h.pct).c_str() : "--",
+    m7d.known ? String((int)m7d.pct).c_str() : "--");
+
+  server.send(200, "application/json", "{\"ok\":true}");
+  drawScreen();
+}
+
+// Unauthenticated on purpose: exposes nothing sensitive, and lets the
+// pusher check reachability before it bothers building a payload.
+void handleHealth() {
+  JsonDocument doc;
+  doc["ok"]            = true;
+  doc["version"]       = CLAULED_VERSION;
+  doc["display_ok"]    = displayOk;
+  doc["uptime"]        = millis() / 1000;
+  doc["last_push_age"] = everPushed ? (long)((millis() - lastPushMs) / 1000UL) : -1;
+  doc["schema"]        = SCHEMA_VERSION;
+  String out; serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+void handleNotFound() {
+  server.send(404, "application/json", "{\"error\":\"not found\"}");
+}
+
+// ── Network ───────────────────────────────────────────────────
+// Retry forever rather than rebooting: a desk gadget should self-heal
+// through a router restart without human intervention.
+void connectWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(CLAULED_HOSTNAME);
+
+  unsigned int attempt = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    attempt++;
+    Serial.printf("[wifi] connecting to '%s' (attempt %u)\n", WIFI_SSID, attempt);
+
+    String line3 = "try " + String(attempt);
+    oledStatus("Connecting...", WIFI_SSID, line3.c_str());
+
+    WiFi.disconnect(true);
+    delay(100);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    unsigned long t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) delay(250);
+
+    if (WiFi.status() != WL_CONNECTED) {
+      unsigned long backoff = min(30000UL, 2000UL * attempt);
+      Serial.printf("[wifi] failed, retrying in %lums\n", backoff);
+      oledStatus("WiFi failed", "Retrying...", WIFI_SSID);
+      delay(backoff);
+    }
+  }
+
   deviceIP = WiFi.localIP().toString();
   Serial.printf("[wifi] connected, IP=%s\n", deviceIP.c_str());
   oledStatus("Connected!", deviceIP.c_str());
+  delay(600);
+}
 
-  // NTP sync — needed to convert Unix epoch reset times to countdowns
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  unsigned long ts = millis();
-  while (time(nullptr) < 100000 && millis() - ts < 5000) delay(200);
-  timeSynced = time(nullptr) > 100000;
-  Serial.printf("[ntp] synced=%s\n", timeSynced ? "yes" : "no");
+// Re-callable: mDNS has to be restarted after a reconnect because the
+// advertisement is bound to the old address.
+void startMDNS() {
+  MDNS.end();
+  if (MDNS.begin(CLAULED_HOSTNAME)) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.printf("[mdns] http://%s.local/\n", CLAULED_HOSTNAME);
+  } else {
+    Serial.println("[mdns] failed to start (device still reachable by IP)");
+  }
+}
 
-  delay(800);
+// Call once. Re-running server.on() would append duplicate handlers on
+// every reconnect, so this deliberately stays out of the reconnect path.
+void startServer() {
+  // Required: without this the WebServer discards custom headers and
+  // server.header("X-Clauled-Key") always comes back empty.
+  static const char* headerKeys[] = { "X-Clauled-Key" };
+  server.collectHeaders(headerKeys, 1);
 
-  server.on("/",        HTTP_GET,  handleRoot);
-  server.on("/config",  HTTP_GET,  handleGetConfig);
-  server.on("/config",  HTTP_POST, handleSaveConfig);
-  server.on("/status",  HTTP_GET,  handleStatus);
-  server.on("/pollnow", HTTP_POST, handlePollNow);
+  server.on("/push",   HTTP_POST, handlePush);
+  server.on("/health", HTTP_GET,  handleHealth);
+  server.onNotFound(handleNotFound);
   server.begin();
+  Serial.println("[http] listening on :80  (POST /push, GET /health)");
 }
 
 // ── Setup / loop ──────────────────────────────────────────────
@@ -621,52 +499,49 @@ void setup() {
   pinMode(BOOT_BTN, INPUT_PULLUP);
 
   Wire.begin(SDA_PIN, SCL_PIN);
-  if (!display.begin(OLED_ADDR, true)) {
-    Serial.println("[oled] not found");
-    while (true) delay(100);
+  displayOk = display.begin(OLED_ADDR, true);
+  if (displayOk) {
+    display.clearDisplay();
+    display.display();
+  } else {
+    // Do NOT halt. A loose I2C wire must not cost you the network endpoint,
+    // or the failure becomes diagnosable only over a USB cable.
+    Serial.println("[oled] not found at 0x3C - continuing headless");
+    Serial.println("[oled] check wiring: SDA=GPIO4, SCL=GPIO5, VCC=3.3V");
   }
-  display.clearDisplay(); display.display();
 
-  if (!LittleFS.begin(true)) {
-    oledStatus("LittleFS error!", "Re-upload data/.");
-    while (true) delay(100);
-  }
+  // Show what is actually flashed, so a stale board is obvious at a glance.
+  Serial.printf("[boot] Clauled %s\n", CLAULED_VERSION);
+  oledStatus("Clauled", "v" CLAULED_VERSION);
+  if (displayOk) delay(1200);
 
-  bool configured = loadConfig();
-  Serial.printf("[cfg] configured=%s  ssid=%s  token_len=%d\n",
-    configured ? "yes" : "no",
-    cfg.wifiSSID.c_str(),
-    cfg.oauthAccess.length());
-
-  if (!configured) startAPMode();
-  else {
-    startStationMode();
-    if (wifiOk) pollAPI();
-  }
+  connectWiFi();
+  startMDNS();
+  startServer();
 
   drawScreen();
   lastCycle = millis();
+  lastDraw  = millis();
 }
 
 void loop() {
   server.handleClient();
-  if (apMode) return;
 
   if (WiFi.status() != WL_CONNECTED) {
-    wifiOk = false;
-    WiFi.reconnect();
-    unsigned long t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) delay(400);
-    wifiOk = WiFi.status() == WL_CONNECTED;
-    if (wifiOk) deviceIP = WiFi.localIP().toString();
+    Serial.println("[wifi] lost connection");
+    connectWiFi();
+    startMDNS();
+    drawScreen();
   }
 
-  if (wifiOk && millis() - lastPoll >= (unsigned long)cfg.pollInterval * 1000UL) {
-    pollAPI(); drawScreen();
+  // Countdowns tick locally between pushes, so redraw once a second.
+  if (millis() - lastDraw >= 1000UL) {
+    drawScreen();
+    lastDraw = millis();
   }
 
-  if (cfg.cycleTime > 0 && pageCount > 1
-      && millis() - lastCycle >= (unsigned long)cfg.cycleTime * 1000UL) {
+  if (CYCLE_TIME > 0 && pageCount > 1
+      && millis() - lastCycle >= (unsigned long)CYCLE_TIME * 1000UL) {
     currentPage = (currentPage + 1) % pageCount;
     drawScreen();
     lastCycle = millis();

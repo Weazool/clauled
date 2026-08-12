@@ -1,18 +1,31 @@
 # Clauled
 
-A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage in real time. It reads straight from the Anthropic API response headers, the same numbers behind the usage page on claude.ai.
+**Latest release:** v1.0.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version at `GET /health`.
+
+A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
+
+## How it works
+
+The device holds **no Claude credentials** and never contacts Anthropic. It sits on your network exposing a single authenticated endpoint, and a pusher on your desktop sends it the numbers:
+
+```
+Claude Code (desktop)  ──POST /push, shared key──▶  Clauled  ──▶  OLED
+```
+
+That inversion is deliberate. An earlier design put a Claude OAuth token on the device and had it poll the API directly, which meant a long-lived credential sitting in flash on a microcontroller, reachable over an unauthenticated LAN web page. Now the token stays on your machine, where it already lives and where TLS is done properly. The device is just a screen.
+
+The wire contract is in [API.md](API.md).
 
 ## Why
 
-The claude.ai usage page is fine, but you have to go look at it. I wanted a thing on my desk that just shows me at a glance how much headroom I have left. So now there is a little screen that updates every minute and I never have to think about it.
+The claude.ai usage page is fine, but you have to go look at it. I wanted a thing on my desk that just shows me how much headroom I have left.
 
 ## What you need
 
 - ESP32-C3 Mini (also sold as ESP32-C3 SuperMini)
-- SH1106 OLED, 128x64 pixels, I2C. These are the common ones with the blue and yellow split screen. Important: it needs to be the SH1106 controller, not the SSD1306. They look the same from the outside but need different drivers.
+- SH1106 OLED, 128x64, I2C. Must be the **SH1106** controller, not the SSD1306 — they look identical from the outside and need different drivers.
 - Four jumper wires
 - USB-C cable
-- A Claude subscription (Pro, Max, Team, or Enterprise)
 
 ## Wiring
 
@@ -23,160 +36,118 @@ The claude.ai usage page is fine, but you have to go look at it. I wanted a thin
 | SDA      | GPIO 4       |
 | SCL      | GPIO 5       |
 
-## Getting your token
+## Configuration
 
-The device authenticates using a Claude Code OAuth token. To get one:
-
-1. Install Claude Code if you do not have it yet: `npm install -g @anthropic-ai/claude-code`
-2. Run `claude setup-token` in a terminal
-3. Log in through the browser when it opens
-4. Copy the token it prints to your terminal
-
-The token starts with `sk-ant-oat01-` and stays valid for a year. Copy it the moment you see it because it is not saved anywhere you can retrieve it from later.
-
-Requires a Claude Pro, Max, Team, or Enterprise subscription.
-
-## Setup
-
-Two options. Pick whichever suits you.
-
-### Option A: no coding needed
-
-1. Flash the firmware (see the Flashing section below)
-2. On first boot the device creates a WiFi network called `ClaudeMonitor`. Connect to it from your phone or laptop.
-3. Open `192.168.4.1` in your browser
-4. Enter your home WiFi name and password, then paste your token
-5. Hit save. The device reboots, connects to your network, and starts showing usage.
-
-The config page stays available at the device IP address shown in the footer of the screen, so you can always go back and change things.
-
-### Option B: hardcode everything before flashing
-
-Open `src/main.cpp` and fill in the values near the top:
-
-```cpp
-#define WIFI_SSID       "MyHomeNetwork"
-#define WIFI_PASSWORD   "supersecret"
-#define OAUTH_TOKEN     "sk-ant-oat01-..."
-#define OAUTH_CLIENT_ID "9d1c250a-..."
-```
-
-The WiFi pair is what matters for skipping the portal. If both SSID and password are set, the device connects straight to your network on boot. The token can be left blank and added later through the browser. If the screen says "Add your token" after connecting, that is what it is waiting for.
-
-To get the `OAUTH_CLIENT_ID`, run this in a terminal on any machine that has Claude Code installed:
+All configuration is compile-time. There is no setup portal and no config web page.
 
 ```bash
-node -e "
-const fs = require('fs');
-const b = fs.readFileSync(require('which').sync('claude'));
-const m = b.toString('latin1').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g);
-const id = m && m.find(x => x.startsWith('9d1c'));
-console.log(id || 'not found');
-"
+cp src/secrets.h.example src/secrets.h
 ```
 
-This is the Claude Code application ID, not yours. Every installation has the same value. It is not a secret, but Anthropic can change it between versions so extracting it from your own binary keeps things in sync. The build will refuse to compile if you leave it blank.
+Then edit `src/secrets.h`:
 
-Leave the WiFi fields blank and it falls back to the portal, so both options work from the same build.
+| Setting | Notes |
+|---|---|
+| `WIFI_SSID` / `WIFI_PASSWORD` | Required. Blank values are a **compile error**, not a boot-time surprise. |
+| `CLAULED_PUSH_KEY` | Shared secret the pusher sends as `X-Clauled-Key`. Required. |
+| `CLAULED_HOSTNAME` | mDNS name, default `clauled` → `http://clauled.local` |
+| `CYCLE_TIME` | Seconds per page; `0` for manual (BOOT button) |
+| `SHOW_WEEKLY_SONNET` | Separate Sonnet weekly bucket, for Max plans |
+| `SHOW_UPTIME` | Adds a device-uptime page |
+| `STALE_AFTER_S` | No push for this long → footer marks the data stale |
+
+Generate a push key with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"
+```
 
 > [!WARNING]
-> If the token is hardcoded it is stored as plain text in the firmware binary. Fine for your own device, but do not share the compiled binary with anyone else.
+> `src/secrets.h` is gitignored and must **never** be committed — it holds your WiFi password. `src/secrets.h.example` is the tracked template; keep real values out of it. Note that the compiled firmware binary contains your WiFi credentials, so don't share build artifacts either.
 
 ## Flashing
 
-This is a PlatformIO project. Open it in VS Code with the PlatformIO extension, or run these commands from a terminal:
+A PlatformIO project. Open it in VS Code with the PlatformIO extension, or install the CLI:
 
-```
-platformio.exe run --target erase       # wipe the flash clean
-platformio.exe run --target uploadfs    # upload the config web page
-platformio.exe run --target upload      # upload the firmware
-platformio.exe device monitor           # watch serial output (optional)
+```bash
+python -m pip install --user platformio
 ```
 
-The erase step is worth doing the first time, or any time the device behaves unexpectedly. The device stores its settings in flash, and a leftover file from a previous flash can quietly override your compile-time credentials. If it keeps booting into setup mode when it should not, erase and reflash.
+```bash
+pio run --target upload
+```
 
-Run `uploadfs` at least once so the config page lands on the device. After that, `upload` is enough unless you change the page.
+```bash
+pio device monitor
+```
 
-If the upload fails with a chip mismatch, check your board is set to `esp32-c3-devkitm-1` in PlatformIO.
+If `pio` is not found after a `--user` install it is on disk but not on PATH — on Windows that is `%APPDATA%\Python\Python3xx\Scripts\pio.exe`.
+
+There is no filesystem image any more, so no `uploadfs` step. If the upload fails with a chip mismatch, check the board is set to `esp32-c3-devkitm-1`.
 
 ## What shows on the screen
 
-The screen always shows two bar pages and cycles through them automatically. You can also flip manually with the BOOT button on the board.
-
 ```
-Current session          16%
+Claude                  1/2
+Current session         16%
 ####........................
        Resets in 1h 21m
+─────────────────────────────
+42s              192.168.1.34
 ```
 
-Title on the left, percentage on the right, bar fills as usage climbs, and the reset countdown sits centered underneath. The footer shows the next poll countdown on the left and the device IP on the right.
+Title left, percent used right, bar underneath, reset countdown centered. The footer shows time since the last push on the left and the device IP on the right. Pages cycle automatically, or manually with the BOOT button.
 
-The two main pages are always on:
+Countdowns tick locally between pushes — the device has no wall clock and needs none, because `resets_in` arrives as seconds remaining rather than a timestamp.
 
-- Current session (the 5 hour rolling window)
-- Weekly, all models (7 day window)
+## Sending it data
 
-If your plan does not return a usage percentage for a window, the bar shows the reset time instead so you still get something useful.
+```bash
+curl -X POST http://clauled.local/push \
+  -H "X-Clauled-Key: <your key>" \
+  -H "Content-Type: application/json" \
+  -d '{"v":1,"usage":{"five_hour":{"pct":23.5,"resets_in":4920}}}'
+```
 
-## Config page
+See [API.md](API.md) for the full contract, including event notifications.
 
-Once the device is on your network, open its IP address in any browser. The page is mobile-friendly and works from your phone.
+Use `curl` rather than PowerShell's `Invoke-WebRequest` for pushes — see troubleshooting below.
 
-### Usage
+## Checking it is alive
 
-![Usage section](docs/config-usage.png)
+```bash
+curl http://clauled.local/health
+```
 
-At the top of the page you see live usage for both windows. Current session on the left, weekly all models on the right. The percentage and bar update every time you hit Refresh or Poll now. The reset time shows how long until that window resets.
+```json
+{"ok":true,"version":"1.0.0","display_ok":true,"uptime":250,"last_push_age":0,"schema":1}
+```
 
-### WiFi
+No key required — `/health` exposes nothing sensitive. `display_ok` is your wiring check, `last_push_age` is seconds since the last accepted push (`-1` means never), and `version` tells you what is actually flashed so a stale board is obvious.
 
-![WiFi section](docs/config-wifi.png)
-
-Enter your home network name and password here. The SSID field pre-fills with the currently saved network. Leave the password blank to keep the existing one. Saving a new WiFi network reboots the device immediately.
-
-### Claude OAuth token
-
-![OAuth section](docs/config-oauth.png)
-
-Paste your `sk-ant-oat01-` token in the access token field. Once saved, the field shows "access token saved" in green so you can confirm it landed. Leave it blank when saving other settings to keep the existing token. The refresh token is optional and only needed if you want the device to renew the access token automatically when it expires.
-
-### Polling and display
-
-![Polling section](docs/config-polling.png)
-
-Poll interval controls how often the device calls the API. Every 60 seconds is the default and costs one minimal API call per minute. Page cycle time controls how quickly the OLED flips between pages. Set it to Manual if you prefer to use the BOOT button yourself.
-
-### Show on screen
-
-![Show on screen section](docs/config-screen.png)
-
-Weekly Sonnet only is for Max plan users who have a separate Sonnet bucket. Device uptime shows how long the device has been running since its last boot. Both are off by default.
-
-### Actions
-
-![Actions section](docs/config-actions.png)
-
-Poll now fires an immediate API call and refreshes the usage display. Refresh reloads the status from the device without polling the API again. Save settings writes your changes to flash. Factory reset wipes everything and returns the device to first-boot setup mode.
+**A missing display is not fatal.** If the OLED is not detected the device logs it, reports `display_ok: false`, and carries on serving pushes — so a loose I2C wire stays diagnosable over the network instead of requiring a USB cable.
 
 ## Troubleshooting
 
-**Garbage or noise on screen.** Almost always an SSD1306 module, not an SH1106. This firmware is written for the SH1106. If you are sure you have an SH1106 and still see noise, try lowering the I2C clock speed by changing `Wire.setClock(400000)` to `Wire.setClock(100000)` in `src/main.cpp`.
+**Garbage or noise on screen.** Almost always an SSD1306 module rather than an SH1106. If you are certain it is an SH1106, try lowering the I2C clock by adding `Wire.setClock(100000)` after `Wire.begin()` in `src/main.cpp`.
 
-**Screen stays blank.** Flash an I2C scanner sketch and confirm the display responds at `0x3C`. Check VCC is on 3.3V and that SDA and SCL are not swapped.
+**Screen stays blank.** Check `curl http://clauled.local/health` first. If `display_ok` is `false` the display did not answer at `0x3C` — confirm VCC is on 3.3V and that SDA (GPIO 4) and SCL (GPIO 5) are not swapped. The rest of the device keeps working regardless.
 
-**Keeps going back to setup mode.** Both SSID and password need to be present. Check the serial monitor on boot for `[cfg] configured=yes`. If it says no, the WiFi details are not sticking. Run the erase step first and try again.
+**Upload fails with `ClearCommError` or "the device does not recognize the command".** Expected on this board — esptool resets the C3 and its native USB re-enumerates, invalidating the port handle. Simply run the upload again; the second attempt usually succeeds. If it keeps failing, force download mode by hand: hold **BOOT**, tap **RESET**, release **BOOT**.
 
-**Screen says "Add your token".** WiFi is working but no token is set. Open the device IP in a browser and paste your `sk-ant-oat01-` token into the config page.
+**Pushes time out from PowerShell, but the device accepted them anyway.** `Invoke-WebRequest` and `Invoke-RestMethod` send `Expect: 100-continue` on POSTs with a body. The ESP32 web server never sends the `100 Continue`, so the client waits for a reply that is not coming while the server processes the push regardless. This looks exactly like an auth failure and is not one. Use `curl.exe` for `POST /push`; GET requests such as `/health` are unaffected.
 
-**Bars show dashes instead of numbers.** The token is not working. Open the serial monitor and look for `[poll] 5h=.. 7d=..`. If you see 401 errors, the token is wrong or expired and needs replacing.
+**WiFi never connects.** The ESP32-C3 has no 5 GHz radio. Confirm `WIFI_SSID` names a 2.4 GHz network — pointing it at a 5 GHz SSID fails silently apart from the serial log.
 
-**Reset countdown shows dashes.** The device syncs time over NTP when it connects to WiFi. If your network blocks NTP the countdown will not work, but the bars still show whatever data the API returns.
+**Build fails with "Set WIFI_SSID in src/secrets.h".** Working as intended — you have not filled in `src/secrets.h` yet, or you never copied it from the example.
 
-**Save button spins forever when entering WiFi credentials.** When you save new WiFi details from the setup portal, the device reboots and joins your home network. The `ClaudeMonitor` network disappears with it, so the browser never gets a response back. The page handles this and shows "Saved, reconnecting". Reconnect your device to your home WiFi and open the IP shown on the OLED.
+**Screen says "Waiting for data".** WiFi is up but nothing has pushed yet. Confirm with `curl http://clauled.local/health`, then check your pusher.
 
-## A note on the API
+**`clauled.local` does not resolve.** Use the IP shown in the footer instead. Some networks block mDNS between wireless and wired segments.
 
-This reads Anthropic's own usage headers from normal API responses. No scraping, no reverse engineering, no workarounds. Just numbers Anthropic already sends back on every request, shown somewhere more convenient.
+**Pushes return 401.** The `X-Clauled-Key` header does not match `CLAULED_PUSH_KEY` in `src/secrets.h`. Remember the device needs reflashing after you change that value.
+
+**Footer says "stale".** No push has arrived for `STALE_AFTER_S`. Normal if Claude Code is closed — the pusher only runs while it is open.
 
 ## License
 
