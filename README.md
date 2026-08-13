@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v3.0.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v3.1.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -95,22 +95,24 @@ If the upload fails to connect with `ClearCommError` or "the device does not rec
 Everything on one screen — no page cycling.
 
 ```
-Claude                Opus 5 med
+5h reset 4h33m 55%
+███████████████████░░░░░░░░░░░░░
+ctx 357k/1M 45%
+███████████████░░░░░░░░░░░░░░░░░
+/ Running Bash
 ────────────────────────────────
-5h session                  23%
-██████░░░░░░░░░░░░░░░░░░░░░░░░░░
-Context                     74%
-████████████████████░░░░░░░░░░░░
-1h21m                   743k/1M
-────────────────────────────────
-$0.00                    USB ok
+Opus 5 xhigh              $0.11
 ```
 
-Two gauges: your 5h subscription quota and how full the context window is. The detail row pairs each with its most useful number — the quota reset countdown, and tokens used. The footer shows session cost and whether data is arriving.
+Two gauges: your 5h subscription quota and how full the context window is. Each is one text line — label, its most useful companion number, and the percentage — above a bar. The bottom row carries model, effort and session cost, and never changes shape, so it works as an anchor for the eye.
 
-**The detail row is also a status line.** While Claude is working it shows what it is doing — `/ Running Bash`, `- Editing main.cpp`, or a gerund like `\ Discombobulating` while it thinks. When Claude wants you, it becomes an inverted banner reading `Your turn` or `Claude needs input`, which is deliberately the loudest thing on the screen.
+The bars are 11 pixels tall. They used to be 6, with a 4-pixel fill, which was hard to read from across a desk; dropping the old top header and the USB indicator paid for the difference.
 
-**When nothing has arrived for five minutes**, the device decides the host is asleep or Claude Code is closed, and switches to a sleep animation — a `(-_-)` face with Z's drifting up and away. It cannot tell which of the two happened, and does not pretend to.
+**The middle row is the status line.** While Claude is working it shows what it is doing — `/ Running Bash`, `- Editing main.cpp`, or a gerund like `\ Discombobulating` while it thinks. When Claude wants you, it becomes an inverted banner reading `Your turn` or `Claude needs input`, deliberately the loudest thing on the screen.
+
+**When nothing has arrived for five minutes**, the device decides the host is asleep or Claude Code is closed, and the status row shows a `(-_-)` face, how long it has been quiet, and drifting z's. It cannot tell which of the two happened, and does not pretend to. The gauges stay on screen throughout — being away is exactly when you are most likely to glance over casually, and a full-screen sleep animation showed you nothing at all.
+
+Both text rows are tight against the 21-character line. If a line will not fit, the device drops the countdown before the percentage — `100%` is one character wider than every other value, and that is precisely when the row most needs to be readable.
 
 The spinner and the sleep animation run on device time, so they keep moving with no pushes at all. The BOOT button clears a stuck banner or spinner.
 
@@ -138,7 +140,7 @@ For normal use, install [clauled-pusher](https://github.com/Weazool/clauled-push
 
 **It went to sleep.** No push has arrived for `STALE_AFTER_S`. Normal when Claude Code is closed or the PC slept — the pusher only runs while Claude Code is open. It wakes on the next push.
 
-**Gauge 1 shows `--`.** The 5h subscription figure needs an authenticated API call, and no token is configured. Everything else works without it — see the [clauled-pusher](https://github.com/Weazool/clauled-pusher) README.
+**Gauge 1 shows `--`.** No 5h figure has reached the device yet. Claude Code sends one in the statusline payload's `rate_limits` block, but not on every invocation, so it can take a few renders — see the [clauled-pusher](https://github.com/Weazool/clauled-pusher) README.
 
 ## License
 

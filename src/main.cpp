@@ -29,6 +29,29 @@
 #define CHAR_W     6      // default GFX font advance at size 1
 #define LINE_CHARS 21     // 128 / 6
 
+// ── Layout ────────────────────────────────────────────────────
+// All 64 rows are budgeted. Dropping the top header and the USB indicator
+// bought the bars nearly double their old height, which is the whole point:
+// a 6-pixel bar with a 4-pixel fill is hard to read from across a desk.
+//
+//    0- 7   text    "5h reset 4h33m 55%"
+//    9-19   bar     quota                        (11 px, was 6)
+//   21-28   text    "ctx 357k/1M 45%"
+//   30-40   bar     context                      (11 px, was 6)
+//   43-53   status  banner / spinner / sleep     (invertible)
+//   55      rule
+//   56-63   text    "Opus 5 xhigh"      "256.6$"
+#define ROW1_Y         0
+#define BAR1_Y         9
+#define ROW2_Y        21
+#define BAR2_Y        30
+#define BAR_H         11
+#define STATUS_Y      43
+#define STATUS_H      11
+#define STATUS_TEXT_Y 45     // 7-px glyph centred in the 11-px band
+#define RULE_Y        55
+#define BOTTOM_Y      56
+
 // ── Protocol limits ───────────────────────────────────────────
 // A malformed or hostile line must not be able to exhaust heap.
 #define SCHEMA_VERSION   3
@@ -115,104 +138,128 @@ void drawLR(int y, const String& l, const String& r) {
   drawRight(y, r);
 }
 
-void drawGauge(int labelY, int barY, const String& label, float pct) {
+/**
+ * One gauge line: "5h reset 4h33m 55%".
+ *
+ * Composed here rather than by the host so the 21-character budget is enforced
+ * where the pixels actually are. Degrades in the order that keeps the most
+ * useful thing: the percentage always survives, the countdown is dropped first.
+ * That matters at 100%, which is one character wider than every other value
+ * and is exactly when you most want the row to be readable.
+ */
+String gaugeLine(const String& label, const String& detail, float pct) {
   String pctStr = (pct >= 0) ? String((int)(pct + 0.5f)) + "%" : "--";
-  drawLR(labelY, label.length() ? label : "Usage", pctStr);
-  display.drawRect(0, barY, SCREEN_W, 6, SH110X_WHITE);
+  String base   = label.length() ? label : "usage";
+
+  String full = base + (detail.length() ? " " + detail : "") + " " + pctStr;
+  if (full.length() <= LINE_CHARS) return full;
+
+  String noDetail = base + " " + pctStr;
+  if (noDetail.length() <= LINE_CHARS) return noDetail;
+
+  return full.substring(0, LINE_CHARS);
+}
+
+void drawBar(int y, float pct) {
+  display.drawRect(0, y, SCREEN_W, BAR_H, SH110X_WHITE);
   if (pct >= 0) {
     int fill = (int)((SCREEN_W - 2) * constrain(pct, 0.0f, 100.0f) / 100.0f);
-    if (fill > 0) display.fillRect(1, barY + 1, fill, 4, SH110X_WHITE);
+    if (fill > 0) display.fillRect(1, y + 1, fill, BAR_H - 2, SH110X_WHITE);
   }
 }
 
 // Inverted banner: white block, black text. Deliberately the loudest thing on
 // the screen - it is the one state meant to catch your eye across the room.
-void drawBanner(int y, const String& text) {
-  display.fillRect(0, y - 1, SCREEN_W, 9, SH110X_WHITE);
+void drawBanner(const String& text) {
+  display.fillRect(0, STATUS_Y, SCREEN_W, STATUS_H, SH110X_WHITE);
   display.setTextColor(SH110X_BLACK);
   String t = text.substring(0, LINE_CHARS);
   int px = (SCREEN_W - (int)t.length() * CHAR_W) / 2;
-  display.setCursor(px < 0 ? 0 : px, y);
+  display.setCursor(px < 0 ? 0 : px, STATUS_TEXT_Y);
   display.print(t);
   display.setTextColor(SH110X_WHITE);
 }
 
 // Spinner turns on the device, so a long turn keeps moving with no pushes.
-void drawBusy(int y, const String& text) {
+void drawBusy(const String& text) {
   static const char frames[] = {'|', '/', '-', '\\'};
   char c = frames[(millis() / 300) % 4];
-  display.setCursor(0, y);
+  display.setCursor(0, STATUS_TEXT_Y);
   display.print(c);
-  display.setCursor(2 * CHAR_W, y);
+  display.setCursor(2 * CHAR_W, STATUS_TEXT_Y);
   display.print(text.substring(0, LINE_CHARS - 2));
 }
 
-void drawSleep() {
-  display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
-  display.setTextSize(1);
-
-  drawLR(0, "Claude", title);
-  display.drawLine(0, 9, 127, 9, SH110X_WHITE);
-
-  display.setCursor(8, 30);
+/**
+ * Sleep, confined to the status row so the gauges stay readable.
+ *
+ * The old animation took the whole screen and grew its Z's from size 1 to 3.
+ * There is no room for that in an 11-pixel row - a size-2 glyph is already 16
+ * pixels tall - so what is left is a horizontal march with a slight rise. The
+ * gauges surviving is worth more than the animation was: overnight is exactly
+ * when you glance over casually, and the old behaviour showed nothing at all.
+ */
+void drawSleepRow() {
+  display.setCursor(0, STATUS_TEXT_Y);
   display.print("(-_-)");
+  display.setCursor(6 * CHAR_W, STATUS_TEXT_Y);
+  display.print(fmtAge(millis() - lastPushMs));
 
   const unsigned long f = millis() / 300;
   for (int i = 0; i < 3; i++) {
     int phase = (int)((f + i * 3) % 9);
     if (phase > 5) continue;                 // a gap, so they don't crowd
-    display.setTextSize(1 + phase / 2);
-    display.setCursor(44 + phase * 10, 44 - phase * 6);
-    display.print("Z");
+    int zx = 66 + phase * 10;
+    if (zx > SCREEN_W - CHAR_W) continue;
+    display.setCursor(zx, STATUS_TEXT_Y - phase / 2);
+    display.print('z');
   }
-  display.setTextSize(1);
-
-  display.drawLine(0, 52, 127, 52, SH110X_WHITE);
-  drawLR(54, "asleep " + fmtAge(millis() - lastPushMs), "USB idle");
-  display.display();
 }
 
 void drawScreen() {
   if (!displayOk) return;
-
-  // Nothing for a while: the host is asleep or Claude Code is closed. The
-  // device cannot tell which, and does not pretend to.
-  if (everPushed && dataStale()) { drawSleep(); return; }
 
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
 
   if (!everPushed) {
-    drawLR(0, "Claude", "v" CLAULED_VERSION);
-    display.drawLine(0, 9, 127, 9, SH110X_WHITE);
     String a = "Waiting for data";
     String b = "over USB serial";
-    display.setCursor((SCREEN_W - (int)a.length() * CHAR_W) / 2, 24);
+    display.setCursor((SCREEN_W - (int)a.length() * CHAR_W) / 2, 20);
     display.print(a);
-    display.setCursor((SCREEN_W - (int)b.length() * CHAR_W) / 2, 36);
+    display.setCursor((SCREEN_W - (int)b.length() * CHAR_W) / 2, 32);
     display.print(b);
-    display.drawLine(0, 52, 127, 52, SH110X_WHITE);
-    drawLR(54, "no data", "USB idle");
+    display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
+    drawLR(BOTTOM_Y, "Clauled", "v" CLAULED_VERSION);
     display.display();
     return;
   }
 
-  drawLR(0, "Claude", title);
-  display.drawLine(0, 9, 127, 9, SH110X_WHITE);
+  // Each gauge is a text line and a bar. The row detail pairs with its gauge:
+  // rowL is the quota's reset countdown, rowR the context's token counts.
+  display.setCursor(0, ROW1_Y);
+  display.print(gaugeLine(g1Label, rowL, g1Pct));
+  drawBar(BAR1_Y, g1Pct);
 
-  drawGauge(11, 20, g1Label, g1Pct);
-  drawGauge(27, 36, g2Label, g2Pct);
+  display.setCursor(0, ROW2_Y);
+  display.print(gaugeLine(g2Label, rowR, g2Pct));
+  drawBar(BAR2_Y, g2Pct);
 
-  // Detail row resolves in priority order: an alert always wins over a
-  // spinner, and a spinner over the static detail.
-  if      (eventLive()) drawBanner(44, eventText);
-  else if (busyLive())  drawBusy(44, busyText);
-  else                  drawLR(44, rowL, rowR);
+  // Status row resolves in priority order: an alert always wins over a
+  // spinner, a spinner over sleep. Nothing at all is a legitimate state - it
+  // means a turn ended more than EVENT_TTL_S ago but the host is still alive.
+  if      (eventLive()) drawBanner(eventText);
+  else if (busyLive())  drawBusy(busyText);
+  else if (everPushed && dataStale()) drawSleepRow();
 
-  display.drawLine(0, 52, 127, 52, SH110X_WHITE);
-  drawLR(54, footerL, "USB ok");
+  display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
+
+  // The bottom row never changes shape, so it works as an anchor for the eye.
+  // The USB indicator that used to sit here is gone: it could never tell
+  // "Claude Code closed" from "cable unplugged", and the status row above
+  // already says whether anything is happening.
+  drawLR(BOTTOM_Y, title, footerL);
 
   display.display();
 }

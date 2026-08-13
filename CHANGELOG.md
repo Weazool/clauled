@@ -11,6 +11,74 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-08-13
+
+A denser screen. Dropping the top header and the USB indicator paid for bars
+nearly twice as tall, and sleep no longer takes the display away from you.
+
+### Changed
+- **New layout.** Every one of the 64 rows is now budgeted:
+
+  ```
+   0- 7   text    5h reset 4h33m 55%
+   9-19   bar     quota                    (11 px, was 6)
+  21-28   text    ctx 357k/1M 45%
+  30-40   bar     context                  (11 px, was 6)
+  43-53   status  banner / spinner / sleep
+  55      rule
+  56-63   text    Opus 5 xhigh      $0.11
+  ```
+
+  Each gauge is one text line and one bar, and the model, effort and cost move
+  to the bottom, where they never change shape and work as an anchor for the
+  eye. A 6-pixel bar with a 4-pixel fill was hard to read from across a desk;
+  this is the change that fixes that.
+- **Gauge lines are composed on the device**, from the gauge label, its paired
+  `row` detail and its percentage. The 21-character budget is now enforced
+  where the pixels are rather than trusted to the host. If the line will not
+  fit, the countdown is dropped before the percentage — 100% is one character
+  wider than every other value, and it is exactly when the row most needs to
+  be readable.
+- **The schema is unchanged.** `v` is still 3 and every field means what it
+  meant; only their positions moved. No pusher change is required, though
+  v3.1.0 of the plugin sends shorter labels that suit the new rows.
+
+### Removed
+- **The `USB ok` / `USB idle` indicator.** It could never distinguish "Claude
+  Code is closed" from "the cable is unplugged", and the status row already
+  says whether anything is happening.
+- **The top header row.** The model and effort it carried now live at the
+  bottom next to the cost.
+
+### Fixed
+- **Sleep no longer takes over the whole screen.** It is confined to the status
+  row, so the gauges stay readable while the host is away — which is the one
+  time you are most likely to glance over casually, and previously the one time
+  there was nothing to see. The cost is the animation: an 11-pixel row cannot
+  hold the growing `Z`s of the old full-screen version, since a size-2 glyph is
+  already 16 pixels tall. What remains is a horizontal march with a slight
+  rise, alongside the sleeping face and how long it has been quiet.
+
+### Documentation
+- **The README claimed v3.0.0 as the latest release** through the whole of
+  v3.0.1, and `API.md`'s status example reported the same stale number. The
+  release process is supposed to move `version.h`, `CHANGELOG.md` and
+  `README.md` together; it did not.
+- **The `flashing-firmware` skill still described the pre-v2.0.0 architecture.**
+  It asked for WiFi credentials and a push key, told you to create
+  `src/secrets.h`, and verified the flash by curling `clauled.local/health` —
+  none of which has existed since v2.0.0. Anyone following it would have gone
+  looking for a file deleted two releases ago. It now covers the real process,
+  and requires checking the reported `version=` against `version.h`: a device
+  can otherwise run a fix while reporting an older number, which is exactly
+  what happened between v3.0.0 and v3.0.1 and left the version string
+  untrustworthy for diagnosis.
+
+### Notes
+- Both data rows are tight. `5h reset 4h33m 100%` is 19 characters and
+  `ctx 357k/1M 100%` is 16, against a 21-character line. The plugin's selftest
+  asserts both at 100% so a label change cannot quietly overflow them.
+
 ## [3.0.1] - 2026-08-13
 
 ### Fixed
