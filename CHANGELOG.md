@@ -11,6 +11,45 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-13
+
+The device moves to USB serial and drops networking entirely. It now holds no
+credentials of any kind — not a Claude token, not a WiFi password, not a shared
+key. The payload schema is unchanged; only the transport differs.
+
+### Changed — breaking
+- **Transport is USB serial, not HTTP.** The device reads newline-delimited
+  JSON from the serial port and answers each line with a single-line JSON
+  acknowledgement. `POST /push` and `GET /health` are gone.
+  `{"v":1,"cmd":"status"}` replaces the health endpoint.
+- **`secrets.h` is gone.** Configuration moved to `src/config.h`, which is
+  tracked in git because nothing in it is secret. There is no copy step and
+  nothing to fill in before flashing.
+- The payload schema is unchanged — the same `v`, `usage`, `resets_in` and
+  `events` fields, and the same merge semantics — so a pusher only has to
+  change how it sends, not what.
+
+### Removed
+- The entire WiFi stack: station mode, reconnection handling, mDNS, the web
+  server, and every diagnostic built for them (I2C bus scanning is retained;
+  WiFi scanning, disconnect-reason decoding, MAC override and PMF/auth-mode
+  reporting are not).
+- WiFi credentials and the shared push key. The device holds no credentials, so
+  release binaries no longer contain anything sensitive.
+- Endpoint authentication, which physical USB access replaces.
+
+### Added
+- `{"v":1,"cmd":"status"}` probe returning firmware version, display state,
+  uptime and last-push age, so a host can confirm a port really is a Clauled
+  device before pushing to it.
+- Human-readable log output is prefixed with `# ` so it is distinguishable from
+  protocol replies, which always begin with `{`.
+- The footer shows USB link state (`USB ok` / `USB idle`) in place of the IP.
+
+### Impact
+- Flash usage dropped from 64.4% to **22.7%** (844,594 -> 297,606 bytes)
+- RAM usage dropped from 12.7% to **4.4%** (41,628 -> 14,412 bytes)
+
 ## [1.1.0] - 2026-08-13
 
 Display and network diagnostics. The device now drives SPI panels as well as

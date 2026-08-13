@@ -9,4 +9,4 @@
 
 #pragma once
 
-#define CLAULED_VERSION "1.1.0"
+#define CLAULED_VERSION "2.0.0"
