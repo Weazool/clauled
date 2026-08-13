@@ -71,7 +71,7 @@ Unauthenticated. Exposes nothing sensitive — no usage figures, no SSID — so 
 can check reachability before building a payload.
 
 ```json
-{ "ok": true, "version": "1.0.0", "display_ok": true, "uptime": 3600, "last_push_age": 42, "schema": 1 }
+{ "ok": true, "version": "1.1.0", "display_ok": true, "uptime": 3600, "last_push_age": 42, "schema": 1 }
 ```
 
 | Field | Meaning |

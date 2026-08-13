@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v1.0.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version at `GET /health`.
+**Latest release:** v1.1.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version at `GET /health`.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -23,11 +23,15 @@ The claude.ai usage page is fine, but you have to go look at it. I wanted a thin
 ## What you need
 
 - ESP32-C3 Mini (also sold as ESP32-C3 SuperMini)
-- SH1106 OLED, 128x64, I2C. Must be the **SH1106** controller, not the SSD1306 — they look identical from the outside and need different drivers.
-- Four jumper wires
+- SH1106 OLED, 128x64. Must be the **SH1106** controller, not the SSD1306 — they look identical from the outside and need different drivers. Both **I2C (4-pin)** and **SPI (7-pin)** modules are supported.
+- Four or seven jumper wires, depending on the module
 - USB-C cable
 
 ## Wiring
+
+Count the pins on your module first. Four pins is I2C; seven (with `CS`) is SPI. Note that SPI modules commonly label the clock `SCK` and MOSI `SDA`, which is easy to mistake for I2C.
+
+**I2C — 4-pin module** (leave `DISPLAY_SPI` commented out)
 
 | OLED pin | ESP32-C3 pin |
 |----------|--------------|
@@ -35,6 +39,23 @@ The claude.ai usage page is fine, but you have to go look at it. I wanted a thin
 | VCC      | 3.3V         |
 | SDA      | GPIO 4       |
 | SCL      | GPIO 5       |
+
+**SPI — 7-pin module** (define `DISPLAY_SPI`)
+
+| OLED pin | ESP32-C3 pin |
+|----------|--------------|
+| GND       | GND     |
+| VCC       | 3.3V    |
+| D1 / SDA  | GPIO 4  |
+| D0 / SCK  | GPIO 5  |
+| DC        | GPIO 6  |
+| RES       | GPIO 7  |
+| CS        | GPIO 10 |
+
+All pins are configurable in `secrets.h`. Safe GPIOs on the ESP32-C3 are 0, 1, 3, 4, 5, 6, 7 and 10 — avoid 2 and 8 (boot strapping), 9 (BOOT button), 11–17 (SPI flash) and 18/19 (USB, which you need for flashing).
+
+> [!NOTE]
+> I2C acknowledges, so a missing or miswired I2C display is detected and reported as `display_ok: false`. **SPI does not** — it is write-only, so `display_ok` is always `true` in SPI mode. Only pixels on the glass confirm an SPI display is working.
 
 ## Configuration
 
@@ -51,6 +72,9 @@ Then edit `src/secrets.h`:
 | `WIFI_SSID` / `WIFI_PASSWORD` | Required. Blank values are a **compile error**, not a boot-time surprise. |
 | `CLAULED_PUSH_KEY` | Shared secret the pusher sends as `X-Clauled-Key`. Required. |
 | `CLAULED_HOSTNAME` | mDNS name, default `clauled` → `http://clauled.local` |
+| `DISPLAY_SPI` | Define for a 7-pin SPI module; leave commented for 4-pin I2C |
+| `OLED_MOSI` / `OLED_CLK` / `OLED_DC` / `OLED_RST` / `OLED_CS` | SPI pins |
+| `SDA_PIN` / `SCL_PIN` | I2C pins |
 | `CYCLE_TIME` | Seconds per page; `0` for manual (BOOT button) |
 | `SHOW_WEEKLY_SONNET` | Separate Sonnet weekly bucket, for Max plans |
 | `SHOW_UPTIME` | Adds a device-uptime page |
