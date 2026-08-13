@@ -11,6 +11,41 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-08-13
+
+The header is just the session now, centred. Model and effort move to the
+footer. Cost is gone.
+
+```
+      clauled-pusher
+────────────────────────────────
+5h reset      2h44m        15%
+█████░░░░░░░░░░░░░░░░░░░░░░░░░░░
+ctx         357k/1M        45%
+██████████████░░░░░░░░░░░░░░░░░░
+/ Running Bash
+────────────────────────────────
+Sonnet 5                 xhigh
+```
+
+### Changed
+- **Header is `session` alone, centred.** It no longer shares the row with the
+  model - the header's one job now is telling you which work this is.
+- **Footer is `title` (the model) on the left, effort on the right.** Both
+  field names are unchanged from v3.3.0; only where they render moved. Cost
+  used to occupy the footer's left slot; it duplicated a number Claude Code's
+  own UI already shows, so that slot now carries the model instead.
+
+### Removed
+- **`footer.left` (cost).** The device no longer reads or draws it. A pusher
+  that still sends it does no harm - the value is simply ignored, same as any
+  other field this firmware does not recognise.
+
+### Notes
+- No new fields, no renamed fields. A pusher older than this release still
+  renders correctly: `session` and `title` land in the same places they always
+  did on the wire, only the SCREEN POSITION of `title` changed.
+
 ## [3.3.0] - 2026-08-13
 
 The header returns, and the four identity fields each get their own corner.

@@ -32,7 +32,7 @@
 // ── Layout ────────────────────────────────────────────────────
 // All 64 rows are budgeted.
 //
-//    0- 7   header  session               model
+//    0- 7   header  session, centred
 //    9      rule
 //   11-18   text    "5h reset"   "4h25m"     "7%"
 //   20-25   bar     quota                        (6 px)
@@ -40,7 +40,7 @@
 //   36-41   bar     context                      (6 px)
 //   43-53   status  banner / spinner / sleep     (invertible)
 //   55      rule
-//   56-63   footer  cost                  effort
+//   56-63   footer  model                 effort
 #define HEADER_Y       0
 #define HEAD_RULE_Y    9
 #define ROW1_Y        11
@@ -71,12 +71,12 @@ Adafruit_SH1106G display(SCREEN_W, SCREEN_H, &Wire, -1);
 #endif
 
 // ── Pushed state ──────────────────────────────────────────────
-String  title = "";
+String  title = "";        // the model - rendered at the footer's left
 String  g1Label = "", g2Label = "";
 float   g1Pct = -1, g2Pct = -1;
 String  rowL = "", rowR = "";
-String  footerL = "", footerR = "";
-String  session = "";
+String  effort = "";       // footer's right
+String  session = "";      // header, centred alone
 
 String        busyText = "";
 unsigned long busyAt   = 0;
@@ -141,6 +141,14 @@ void drawLR(int y, const String& l, const String& r) {
   drawRight(y, r);
 }
 
+void drawCenter(int y, const String& text) {
+  if (!text.length()) return;
+  String t = text.substring(0, LINE_CHARS);
+  int px = (SCREEN_W - (int)t.length() * CHAR_W) / 2;
+  display.setCursor(px < 0 ? 0 : px, y);
+  display.print(t);
+}
+
 String pctText(float pct) {
   return (pct >= 0) ? String((int)(pct + 0.5f)) + "%" : "--";
 }
@@ -195,10 +203,7 @@ void drawBar(int y, float pct) {
 void drawBanner(const String& text) {
   display.fillRect(0, STATUS_Y, SCREEN_W, STATUS_H, SH110X_WHITE);
   display.setTextColor(SH110X_BLACK);
-  String t = text.substring(0, LINE_CHARS);
-  int px = (SCREEN_W - (int)t.length() * CHAR_W) / 2;
-  display.setCursor(px < 0 ? 0 : px, STATUS_TEXT_Y);
-  display.print(t);
+  drawCenter(STATUS_TEXT_Y, text);
   display.setTextColor(SH110X_WHITE);
 }
 
@@ -246,22 +251,17 @@ void drawScreen() {
   display.setTextColor(SH110X_WHITE);
 
   if (!everPushed) {
-    String a = "Waiting for data";
-    String b = "over USB serial";
-    display.setCursor((SCREEN_W - (int)a.length() * CHAR_W) / 2, 20);
-    display.print(a);
-    display.setCursor((SCREEN_W - (int)b.length() * CHAR_W) / 2, 32);
-    display.print(b);
+    drawCenter(20, "Waiting for data");
+    drawCenter(32, "over USB serial");
     display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
     drawLR(BOTTOM_Y, "Clauled", "v" CLAULED_VERSION);
     display.display();
     return;
   }
 
-  // Header: which session on the left, which model on the right. The session
-  // is truncated to whatever the model leaves free, never the other way round -
-  // the model is short and fixed, the session name is neither.
-  drawLR(HEADER_Y, session, title);
+  // Header is just the session, centred. Model and effort live in the footer
+  // now - the header's only job is telling you which work this is.
+  drawCenter(HEADER_Y, session);
   display.drawLine(0, HEAD_RULE_Y, SCREEN_W - 1, HEAD_RULE_Y, SH110X_WHITE);
 
   // Each gauge is a three-column line and a bar. The row detail pairs with its
@@ -281,10 +281,10 @@ void drawScreen() {
 
   display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
 
-  // Cost left, effort right. The USB indicator that used to sit here is gone:
-  // it could never tell "Claude Code closed" from "cable unplugged", and the
-  // status row above already says whether anything is happening.
-  drawLR(BOTTOM_Y, footerL, footerR);
+  // Model left, effort right. Cost used to sit here; it only duplicated a
+  // number Claude Code's own UI already shows, and the corner is more useful
+  // holding the model now that it no longer fits in the header.
+  drawLR(BOTTOM_Y, title, effort);
 
   display.display();
 }
@@ -343,11 +343,10 @@ void handleLine(const String& line) {
     rowR = field(r["right"], rowR);
   }
 
+  // footer.left is no longer read - it used to carry cost, which is gone. A
+  // pusher still sending it does no harm; the value is simply never drawn.
   JsonVariantConst f = root["footer"];
-  if (!f.isNull()) {
-    footerL = field(f["left"],  footerL);
-    footerR = field(f["right"], footerR);
-  }
+  if (!f.isNull() && !f["right"].isNull()) effort = field(f["right"], effort);
 
   // An empty string clears the spinner - that is how Stop ends a turn.
   if (!root["busy"].isNull()) {

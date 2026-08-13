@@ -18,23 +18,25 @@ Match on that rather than hardcoding a port, and it survives being moved.
 One JSON object per line, terminated with `\n`:
 
 ```json
-{"v":3,"session":"clauled-pusher","title":"Opus 5","gauge1":{"label":"5h reset","pct":55},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"left":"$0.11","right":"xhigh"}}
+{"v":3,"session":"clauled-pusher","title":"Sonnet 5","gauge1":{"label":"5h reset","pct":55},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
 ```
 
 | Field | Type | Renders as |
 |---|---|---|
 | `v` | int | Schema version, currently `3`. A mismatch is rejected, never guessed at. |
-| `session` | string | Header, left — which session |
-| `title` | string | Header, right — the model |
+| `session` | string | Header — which session, centred |
+| `title` | string | Footer, left — the model |
 | `gauge1` / `gauge2` | object | `{ "label": string, "pct": number }`. `pct` below 0 shows `--` with an empty bar. |
 | `row` | object | `{ "left": string, "right": string }` — `left` pairs with `gauge1`, `right` with `gauge2` |
-| `footer` | object | `{ "left": string, "right": string }` — cost and effort |
+| `footer` | object | `{ "right": string }` — the effort level. `left` is accepted but ignored — see Notes. |
 | `busy` | string | Spinner text. **Empty string clears it.** |
 | `events` | array | `[{ "text": string }]` — raises an inverted banner |
 
-`session` and `footer.right` were added in firmware v3.3.0. They are optional,
-so an older pusher still renders: its combined `"Opus 5 xhigh"` lands in the
-header's right and the footer's right stays empty.
+`session` and `footer.right` were added in firmware v3.3.0; `title` moved from
+the header to the footer in v3.4.0, and `footer.left` (cost) stopped being
+drawn there. All three changes are on the RENDER side only — the field names
+and their meanings are unchanged, so a v3.2.0-or-later pusher still renders
+correctly without any change.
 
 Every string is truncated to **21 characters**, one screen line. `busy` should
 stay under 19 to leave room for the spinner.
@@ -42,7 +44,7 @@ stay under 19 to leave room for the spinner.
 ## Screen layout
 
 ```
-clauled-pusher          Opus 5      session | title
+      clauled-pusher                session, centred
 ────────────────────────────────
 5h reset      4h33m        55%      gauge1.label | row.left | gauge1.pct
 ███████████████████░░░░░░░░░░░░░    gauge1.pct
@@ -50,7 +52,7 @@ ctx         357k/1M        45%      gauge2.label | row.right | gauge2.pct
 ███████████████░░░░░░░░░░░░░░░░░    gauge2.pct
 / Running Bash                      busy / events / sleep
 ────────────────────────────────
-$0.11                    xhigh      footer.left | footer.right
+Sonnet 5                 xhigh      title | footer.right
 ```
 
 **Each data row is three columns**: the gauge label flush left, its paired `row`
@@ -95,7 +97,7 @@ does not start with `{`.
 ```
 
 ```json
-{"ok":true,"version":"3.3.0","display_ok":true,"uptime":141,"last_push_age":114,"schema":3}
+{"ok":true,"version":"3.4.0","display_ok":true,"uptime":141,"last_push_age":114,"schema":3}
 ```
 
 `display_ok` is meaningful only for I2C modules. **SPI has no acknowledgement,
@@ -180,3 +182,13 @@ so a field you leave out keeps its last good value, while `pct: -1` actively
 blanks the gauge to `--`. Since the payload can arrive reduced, sending `-1` for
 a missing feed overwrites a good reading with nothing. Reserve `-1` for a feed
 you know to be unavailable.
+
+**Every push should compute everything it can, not just its own reason for
+pushing.** A hook that only sends the field it exists for — a spinner, a
+banner — leaves everything else showing whatever the last push happened to
+carry, which can be minutes stale. If effort or the model changes mid-session,
+that staleness is exactly what you would notice first. Recompute the full
+display on every push from whatever the trigger's payload provides, merging in
+only the field that push exists to add. The one field this cannot fix is the
+model on a hook-only turn: Claude Code's hook payloads never carry it, only the
+statusline does, so it is unavoidably cached rather than live there.
