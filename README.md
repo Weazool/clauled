@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v3.4.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v3.5.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -69,6 +69,7 @@ There is nothing to fill in. `src/config.h` is tracked in git and contains no se
 | `OLED_MOSI` / `OLED_CLK` / `OLED_DC` / `OLED_RST` / `OLED_CS` | SPI pins |
 | `SDA_PIN` / `SCL_PIN` / `OLED_ADDR` | I2C pins and address |
 | `STALE_AFTER_S` | No push for this long → the device falls asleep (default 300) |
+| `QUIET_IDLE_S` | No push for this long **during quiet hours** → the panel powers off (default 900) |
 
 ## Flashing
 
@@ -120,6 +121,8 @@ The columns never overlap. If the centred value would touch its neighbour it nud
 
 The spinner and the sleep animation run on device time, so they keep moving with no pushes at all. The BOOT button clears a stuck banner or spinner.
 
+**During quiet hours, idle for long enough, the panel powers off entirely** — not just the sleep animation, the actual `SH110X_DISPLAYOFF` command, zero light. The device has no clock, so "quiet hours" is a decision the host makes and sends as a plain `quiet: true/false` on every push; the device only tracks how long it's been idle. Default window is 00:00–06:00 local, default idle threshold 15 minutes — both configurable, see the [clauled-pusher](https://github.com/Weazool/clauled-pusher) README for the host side and `QUIET_IDLE_S` above for the device side. Any push at all wakes it immediately; the BOOT button forces a brief flash to prove the device is alive, though it goes straight back to sleep on the next tick since pressing a button isn't a push.
+
 ## Sending it data
 
 Anything that can write to a serial port works. See [API.md](API.md) for the full protocol.
@@ -143,6 +146,8 @@ For normal use, install [clauled-pusher](https://github.com/Weazool/clauled-push
 **Port is busy.** Only one program can hold a serial port. Close `pio device monitor` or any other terminal before pushing.
 
 **It went to sleep.** No push has arrived for `STALE_AFTER_S`. Normal when Claude Code is closed or the PC slept — the pusher only runs while Claude Code is open. It wakes on the next push.
+
+**The screen is completely dark, not even the sleeping face.** Check `quiet_sleep` on the status probe. If it's `true`, this is the quiet-hours power-down working as intended — idle, during the configured window. Any push wakes it; BOOT gives a brief flash to confirm the device is alive.
 
 **Gauge 1 shows `--`.** No 5h figure has reached the device yet. Claude Code sends one in the statusline payload's `rate_limits` block, but not on every invocation, so it can take a few renders — see the [clauled-pusher](https://github.com/Weazool/clauled-pusher) README.
 

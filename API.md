@@ -18,7 +18,7 @@ Match on that rather than hardcoding a port, and it survives being moved.
 One JSON object per line, terminated with `\n`:
 
 ```json
-{"v":3,"session":"clauled-pusher","title":"Sonnet 5","gauge1":{"label":"5h reset","pct":55},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
+{"v":3,"session":"clauled-pusher","title":"Sonnet 5","quiet":false,"gauge1":{"label":"5h reset","pct":55},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
 ```
 
 | Field | Type | Renders as |
@@ -26,6 +26,7 @@ One JSON object per line, terminated with `\n`:
 | `v` | int | Schema version, currently `3`. A mismatch is rejected, never guessed at. |
 | `session` | string | Header — which session, centred |
 | `title` | string | Footer, left — the model |
+| `quiet` | bool | Not rendered directly — see Quiet hours below |
 | `gauge1` / `gauge2` | object | `{ "label": string, "pct": number }`. `pct` below 0 shows `--` with an empty bar. |
 | `row` | object | `{ "left": string, "right": string }` — `left` pairs with `gauge1`, `right` with `gauge2` |
 | `footer` | object | `{ "right": string }` — the effort level. `left` is accepted but ignored — see Notes. |
@@ -34,9 +35,10 @@ One JSON object per line, terminated with `\n`:
 
 `session` and `footer.right` were added in firmware v3.3.0; `title` moved from
 the header to the footer in v3.4.0, and `footer.left` (cost) stopped being
-drawn there. All three changes are on the RENDER side only — the field names
-and their meanings are unchanged, so a v3.2.0-or-later pusher still renders
-correctly without any change.
+drawn there; `quiet` was added in v3.5.0. All of these are additive or
+render-only — the field names already established keep their meaning, so a
+v3.2.0-or-later pusher still renders correctly with no change, and any pusher
+that never sends `quiet` simply never triggers the quiet-hours power-down.
 
 Every string is truncated to **21 characters**, one screen line. `busy` should
 stay under 19 to leave room for the spinner.
@@ -75,6 +77,47 @@ The status row resolves in priority order:
 4. **nothing** — a legitimate state: the last turn ended over 5 minutes ago but
    the host is still pushing
 
+Above all of that, and independent of it: if `quiet` is `true` and idle exceeds
+`QUIET_IDLE_S` (default 900s / 15 min), the panel is powered off entirely —
+`SH110X_DISPLAYOFF` sent once on the transition, nothing drawn while off. See
+**Quiet hours** below.
+
+## Quiet hours
+
+The device has no clock and never will — that is why NTP was removed outright
+in v2.0.0. Whether it is currently "quiet hours" is a **host** decision, sent
+on every push as a plain boolean:
+
+```json
+{"v":3,"quiet":true}
+```
+
+The device only owns the OTHER half: how long is idle. `quiet:true` plus more
+than `QUIET_IDLE_S` since the last push powers the panel off. Any push at all
+wakes it — idle resets to 0 on every push, whether or not that push mentions
+`quiet` — so the device is never dark while data is actually arriving.
+
+**Send `quiet` on every push, true or false, never omitted.** The device only
+updates it on an explicit value; an omitted key leaves the last one in place.
+Send it once as `true` and stop sending it, and the panel stays dark forever
+once idle, even long after quiet hours end.
+
+**This can only ever be as fresh as the last push.** If the host goes
+completely silent for hours — Claude Code fully closed — spanning a quiet-hours
+boundary, the device is working from whatever `quiet` value the last push
+carried, however old. This is the same tradeoff already accepted for the 5h
+countdown, which also just decrements locally between pushes with no resync:
+the price of no network stack and no wall clock.
+
+The BOOT button bypasses the power-down for exactly one frame — a brief flash
+to prove the device is alive, not a sustained wake. The very next tick
+re-applies the policy and, since a button press does not reset the idle timer,
+puts it straight back to sleep.
+
+`{"v":3,"cmd":"status"}` reports the current state as `quiet_sleep` — see
+Status probe below. A dark panel with `quiet_sleep:true` is working as
+intended, not a fault.
+
 ## Replies
 
 Every line is answered with a single JSON object:
@@ -97,11 +140,14 @@ does not start with `{`.
 ```
 
 ```json
-{"ok":true,"version":"3.4.0","display_ok":true,"uptime":141,"last_push_age":114,"schema":3}
+{"ok":true,"version":"3.5.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"schema":3}
 ```
 
 `display_ok` is meaningful only for I2C modules. **SPI has no acknowledgement,
 so it always reports `true`** — only pixels confirm a working SPI display.
+
+`quiet_sleep` is `true` while the panel is powered off for quiet hours. Check
+this before assuming an unresponsive-looking device is broken at 2am.
 
 Use this to confirm a port really is a Clauled device before pushing to it.
 

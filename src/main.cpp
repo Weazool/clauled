@@ -85,10 +85,12 @@ unsigned long eventAt   = 0;
 
 unsigned long lastPushMs = 0;
 bool          everPushed = false;
+bool          quietHours = false;  // host-computed: is it currently the quiet window?
 
 // ── Runtime ───────────────────────────────────────────────────
 unsigned long lastDraw  = 0;
 bool          displayOk = false;
+bool          displayAsleep = false;  // panel powered off for quiet-hours idle
 String        lineBuf;
 bool          lineOverflow = false;
 
@@ -113,6 +115,22 @@ bool eventLive() {
 bool busyLive() {
   if (busyText.length() == 0) return false;
   return ((millis() - busyAt) / 1000UL) <= (unsigned long)BUSY_TTL_S;
+}
+
+/**
+ * Should the panel be dark right now?
+ *
+ * Two conditions, from two different clocks: quietHours comes from the host,
+ * which has a real one; the idle duration comes from millis(), which this
+ * device has always had. quietHours can only ever be as fresh as the last
+ * push - if the host goes silent for hours (Claude Code fully closed) spanning
+ * a quiet-hours boundary, this reads whatever the last real push said. That
+ * mirrors every other host-computed value here (the 5h countdown has the same
+ * limitation) and is the accepted cost of having no network stack and no NTP.
+ */
+bool shouldPowerDown() {
+  if (!quietHours) return false;
+  return ((millis() - lastPushMs) / 1000UL) > (unsigned long)QUIET_IDLE_S;
 }
 
 // Human-readable logging goes out with a '#' prefix so the host can tell it
@@ -243,8 +261,27 @@ void drawSleepRow() {
   }
 }
 
-void drawScreen() {
+/**
+ * force=true bypasses the power-down gate for exactly one call - used by the
+ * BOOT button so it is not completely dead at 3am. It does not stay awake:
+ * the very next loop() tick re-applies shouldPowerDown() and, since pressing
+ * a button does not touch lastPushMs, puts it straight back to sleep. That
+ * gives a brief flash to confirm the device is alive, not a sustained peek.
+ */
+void drawScreen(bool force = false) {
   if (!displayOk) return;
+
+  if (!force && shouldPowerDown()) {
+    if (!displayAsleep) {
+      display.oled_command(SH110X_DISPLAYOFF);
+      displayAsleep = true;
+    }
+    return;
+  }
+  if (displayAsleep) {
+    display.oled_command(SH110X_DISPLAYON);
+    displayAsleep = false;
+  }
 
   display.clearDisplay();
   display.setTextSize(1);
@@ -310,6 +347,7 @@ void sendStatus() {
   doc["display_ok"]    = displayOk;
   doc["uptime"]        = millis() / 1000;
   doc["last_push_age"] = everPushed ? (long)((millis() - lastPushMs) / 1000UL) : -1;
+  doc["quiet_sleep"]    = displayAsleep;
   doc["schema"]        = SCHEMA_VERSION;
   String out;
   serializeJson(doc, out);
@@ -334,6 +372,10 @@ void handleLine(const String& line) {
   // and the statusline pushing only gauges must not clear the busy state.
   if (!root["title"].isNull())   title   = field(root["title"], title);
   if (!root["session"].isNull()) session = field(root["session"], session);
+  // quiet is a state flag, not optional data - unlike everything else here, an
+  // ABSENT key leaves it unchanged, but the host is expected to send it on
+  // every push (true or false) so a stale "true" cannot outlive quiet hours.
+  if (!root["quiet"].isNull())   quietHours = root["quiet"].as<bool>();
   applyGauge(root["gauge1"], g1Label, g1Pct);
   applyGauge(root["gauge2"], g2Label, g2Pct);
 
@@ -427,20 +469,22 @@ void loop() {
   pumpSerial();
 
   // The spinner and the sleep animation need a faster cadence than the once-a
-  // second the footer would otherwise require.
-  const bool animating = (everPushed && dataStale()) || busyLive();
+  // second the footer would otherwise require. Once powered down there is
+  // nothing to animate, so drop back to 1 Hz rather than polling uselessly.
+  const bool animating = !displayAsleep && ((everPushed && dataStale()) || busyLive());
   if (millis() - lastDraw >= (animating ? 300UL : 1000UL)) {
     drawScreen();
     lastDraw = millis();
   }
 
-  // BOOT button clears a stuck banner or spinner early.
+  // BOOT button clears a stuck banner or spinner early, and forces one frame
+  // even during a quiet-hours power-down - see drawScreen(force).
   static bool lastBtn = HIGH;
   bool btn = digitalRead(BOOT_BTN);
   if (btn == LOW && lastBtn == HIGH) {
     eventText = "";
     busyText  = "";
-    drawScreen();
+    drawScreen(true);
     delay(200);
   }
   lastBtn = btn;

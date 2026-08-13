@@ -11,6 +11,42 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-08-13
+
+Quiet hours. Idle for long enough during a configured overnight window, the
+panel powers off entirely - not the sleep animation, an actual
+`SH110X_DISPLAYOFF`.
+
+### Added
+- **`quiet`** (bool) - the host's decision, sent on every push. Combined with
+  `QUIET_IDLE_S` (default 900s / 15 min) of idle time, powers the panel off
+  with `SH110X_DISPLAYOFF` rather than merely dimming the sleep animation.
+  Sent through `oled_command()`, which is bus-agnostic - works identically on
+  I2C and SPI wiring, verified on real hardware with a temporarily shortened
+  threshold rather than assumed from the datasheet.
+- **`quiet_sleep`** in the status probe reply, so a dark panel at 2am reads as
+  "working as intended" instead of "device unreachable."
+- The BOOT button now forces exactly one frame past the power-down gate -
+  proof the device is alive, not a sustained wake. The next tick re-applies
+  the policy immediately, since a button press does not reset the idle timer.
+
+### Notes
+- **The device still has no clock and never will** - this is why NTP was
+  removed outright in v2.0.0. `quiet` has to come from the host, which is why
+  it is the one field that must be sent on every push, true or false, never
+  omitted: the device only updates it on an explicit value, so an omitted key
+  after a single `true` would leave the panel dark forever.
+- Any push at all wakes the device, whether or not that push mentions `quiet`
+  - idle resets to zero on every push, and `shouldPowerDown()` is naturally
+  false the instant that happens. No special-cased wake logic was needed.
+- Verified on hardware, not just compiled: `quiet:true` past the idle
+  threshold powers off; any push (even one that never mentions `quiet`) wakes
+  it immediately; `quiet:false` past the same idle time never powers down -
+  proving the flag gates it, not idle time alone.
+- `QUIET_IDLE_S` lives in `src/config.h` next to `STALE_AFTER_S` - a device-side
+  constant, deliberately separate from the host-side quiet-hours window, which
+  only the host can know.
+
 ## [3.4.0] - 2026-08-13
 
 The header is just the session now, centred. Model and effort move to the
