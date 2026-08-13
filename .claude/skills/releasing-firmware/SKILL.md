@@ -177,10 +177,28 @@ be pushed and whether a binary is attached.
 
 ```bash
 git push origin main --follow-tags
-gh release create "vX.Y.Z" --title "vX.Y.Z" --notes "<changelog section>"
 ```
 
-Append the binary path **only** if step 8 came back clean.
+**Always pass `--repo`.** This repo is a fork with an `upstream` remote, and `gh`
+resolves to the **parent** (`rafbanaan/clauled`) by default — without `--repo` it tries
+to release against someone else's repository:
+
+```bash
+awk '/^## \[X\.Y\.Z\]/{f=1;next} f && /^## \[/{exit} f' CHANGELOG.md > /tmp/notes.md
+gh release create "vX.Y.Z" --repo Weazool/clauled --title "vX.Y.Z" --notes-file /tmp/notes.md
+```
+
+Use `--notes-file`, not `--notes` — changelog text contains backticks, quotes and
+newlines that get mangled when inlined as a shell argument.
+
+Append the binary path **only** if step 8 came back clean. Then verify what actually
+shipped:
+
+```bash
+gh release view "vX.Y.Z" --repo Weazool/clauled --json assets -q '.assets[].name'
+```
+
+Empty output confirms a notes-only release with no binary attached.
 
 ## Common Mistakes
 
@@ -194,3 +212,5 @@ Append the binary path **only** if step 8 came back clean.
 | Tagging before the build passes | Build first; a bad tag must be deleted on the remote too |
 | Attaching a binary without scanning | Run the gate every time, including on re-runs |
 | Forgetting the README line | `version.h`, `CHANGELOG.md`, and `README.md` move together |
+| `gh release create` without `--repo` | On a fork, `gh` targets the upstream parent, not yours |
+| Inlining notes with `--notes` | Backticks and quotes get mangled; use `--notes-file` |
