@@ -11,6 +11,13 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-08-13
+
+No functional change. README trimmed roughly by a third - the same facts,
+without the design-rationale essays now that they live in this file's
+history instead. That history is worth reading if you want the "why"; the
+README's job is just "how do I use this."
+
 ## [3.6.0] - 2026-08-13
 
 When it's your turn, the whole screen inverts - not just the status row.
