@@ -11,6 +11,81 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-08-13
+
+Multiple Claude Code sessions, tracked and rotated on the device with no host
+coordination beyond tagging each push with which session it came from.
+
+```
+clauled-pusher                 2/5
+────────────────────────────────
+5h            4h33m        55%      <- alternates with the weekly quota
+███████████████████░░░░░░░░░░░░░
+ctx         357k/1M        45%
+███████████████░░░░░░░░░░░░░░░░░
+/ Running Bash
+────────────────────────────────
+Sonnet 5                 xhigh
+```
+
+### Added
+- **A session roster, up to 8 slots**, keyed by a new `sid` field. A push with
+  no `sid` lands in a shared fallback slot - the exact pre-3.7.0 behaviour,
+  unaffected for a pusher that has not been updated.
+- **Rotation, every `ROTATE_INTERVAL_S` (3s)**, picked by priority: any
+  session needing attention beats any session merely working beats
+  everything else. The same "alert always wins" rule a single session
+  already had, now deciding which SESSION is shown, not only what one
+  session's status row displays. If the active group changes, the device
+  snaps to it immediately rather than waiting for the next tick.
+- **A per-session prune**, `SESSION_GONE_S` (default 900s / 15 min) - no push
+  from a session in that long and it is assumed closed, dropped from the
+  roster.
+- **The header is `session` left, `N/M` right** - position among *every*
+  active session, not just the ones currently rotating. Two sessions needing
+  attention out of five shows `2/5` then `4/5`, not a smaller-looking `1/2`.
+- **`gauge3`** - the weekly (7-day, all models) quota. Alternates with
+  `gauge1` in row 1's slot, on its own `ROTATE_INTERVAL_S` clock, entirely
+  independent of session rotation.
+- **An `Idle` screen** for when the roster empties but the device has seen
+  real data this boot: header reads `Idle`, the quota row keeps alternating,
+  a bigger idle graphic (the pre-v3.1.0 growing-Z animation, which finally has
+  room again) fills the lower half. Different from `Waiting for data`, which
+  is for a device that has never received anything at all.
+- **The footer's model never goes blank** while any session has ever reported
+  one. A session whose first-ever push is a hook (hooks never carry the
+  model) falls back to the last model seen from *any* session rather than
+  show nothing.
+
+### Changed
+- **`gauge1`/`row.left` (5h quota) and `gauge3` are account-level, not
+  per-session.** The same reading regardless of which session's push carries
+  it - merge is against one shared copy, not per-slot. `gauge2`/`row.right`
+  (context) and everything else stays genuinely per-session.
+- **BOOT now clears only the session on screen**, not the whole roster -
+  dismissing one session's banner must not silently dismiss a different
+  session's "Your turn" you have not seen yet.
+- **The quiet-hours idle clock (`shouldPowerDown`) now tracks every session
+  at once**, not whichever happens to be displayed. One quiet session must
+  not power off a panel a different session is actively using.
+
+### Notes
+- No protocol break. `sid` and `gauge3` are additive; a pusher that predates
+  this release still renders correctly with no change, at v3.4.0's layout.
+- Verified on real hardware, not just compiled: pushed two and then four
+  distinct sessions and confirmed the roster count tracked correctly; forced
+  a session to age out with a temporarily shortened `SESSION_GONE_S` and
+  confirmed it actually dropped; kept the device responsive (uptime
+  advancing, no reboot) across a burst of multi-session pushes. Not
+  camera-verified - there is no way to confirm the actual pixel layout from
+  this environment, only that the roster, rotation and pruning logic behaves
+  correctly and the device never crashes or hangs.
+- One genuinely useful accident during that verification: this repo's own
+  Claude Code session, with clauled-pusher's hooks active, kept joining the
+  roster as a real, organic session alongside the synthetic test ones -
+  better validation of concurrent tracking than a purely synthetic test would
+  have been.
+
 ## [3.6.1] - 2026-08-13
 
 No functional change. README trimmed roughly by a third - the same facts,

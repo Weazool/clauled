@@ -32,12 +32,13 @@
 #define OLED_ADDR           0x3C
 
 // ── Display behaviour ─────────────────────────────────────────
-// Everything renders on one screen, so there is nothing to cycle through.
-#define STALE_AFTER_S       300   // no push for this long -> mark data stale
+#define STALE_AFTER_S       300   // no push for a session this long -> show it as quiet
+#define SESSION_GONE_S      900   // no push for a session this long -> drop it from the roster
+#define ROTATE_INTERVAL_S     3   // multiple sessions in the same priority group -> cycle this often
 
 // Quiet hours are a HOST decision - the device has no clock and never will
 // (that is why NTP was removed entirely; see CHANGELOG v2.0.0). The host
 // sends "quiet": true/false on every push, computed from its own local time.
 // This is only the idle threshold this device waits for once quiet hours are
 // in effect before actually powering the panel off.
-#define QUIET_IDLE_S        900   // idle this long during quiet hours -> display off
+#define QUIET_IDLE_S        900   // no push from ANY session this long during quiet hours -> display off

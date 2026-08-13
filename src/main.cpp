@@ -32,15 +32,17 @@
 // ── Layout ────────────────────────────────────────────────────
 // All 64 rows are budgeted.
 //
-//    0- 7   header  session, centred
+//    0- 7   header  session name          N/M
 //    9      rule
-//   11-18   text    "5h lim"     "4h25m"     "7%"
-//   20-25   bar     quota                        (6 px)
+//   11-18   text    "5h"   "4h25m"     "7%"     <- alternates with "1w" every
+//   20-25   bar     account quota                  ROTATE_INTERVAL_S, on its
+//                                                   own clock - independent of
+//                                                   which session is shown
 //   27-34   text    "ctx"      "357k/1M"    "45%"
-//   36-41   bar     context                      (6 px)
+//   36-41   bar     context (per session)        (6 px)
 //   43-53   status  banner / spinner / sleep
 //   55      rule
-//   56-63   footer  model                 effort
+//   56-63   footer  model (always, see below)  effort
 #define HEADER_Y       0
 #define HEAD_RULE_Y    9
 #define ROW1_Y        11
@@ -59,6 +61,7 @@
 #define FIELD_MAX        21     // one screen line
 #define EVENT_TTL_S      300
 #define BUSY_TTL_S       180    // a missed Stop hook must not spin forever
+#define MAX_SESSIONS       8    // bounded roster - a hard cap, not a tuning knob
 
 #ifdef DISPLAY_SPI
 // Software SPI: works on any GPIOs with no peripheral setup, and the 1 KB
@@ -69,21 +72,58 @@ Adafruit_SH1106G display(SCREEN_W, SCREEN_H, &Wire, -1);
 #endif
 
 // ── Pushed state ──────────────────────────────────────────────
-String  title = "";        // the model - rendered at the footer's left
-String  g1Label = "", g2Label = "";
-float   g1Pct = -1, g2Pct = -1;
-String  rowL = "", rowR = "";
-String  effort = "";       // footer's right
-String  session = "";      // header, centred alone
+//
+// Two different kinds of state, kept deliberately separate:
+//
+//   - The account quota (row 1) and the last known model (footer left) are
+//     the SAME for every session under this login - they are not really
+//     "session data" at all - so they live as plain globals, outside the
+//     roster, and survive it going empty.
+//   - Everything else (context, effort, activity, name) is genuinely
+//     per-session and lives in a Session struct, one per concurrent
+//     Claude Code session pushing to this device.
 
-String        busyText = "";
-unsigned long busyAt   = 0;
-String        eventText = "";
-unsigned long eventAt   = 0;
+// Account-level quota. "5h" and "1w" are the host's labels, not hardcoded
+// here - only the SLOT (five-hour vs weekly) is fixed, same as gauge1/gauge2
+// were always host-labelled.
+String        q5Label = "", q5Reset = "";
+float         q5Pct   = -1;
+String        qwLabel = "", qwReset = "";
+float         qwPct   = -1;
+bool          quotaShowWeek = false;
+unsigned long quotaRotateMs = 0;
 
-unsigned long lastPushMs = 0;
-bool          everPushed = false;
-bool          quietHours = false;  // host-computed: is it currently the quiet window?
+// Last known model, independent of any one session - see drawScreen() for
+// why the footer falls back to this rather than ever going blank.
+String lastModel = "";
+
+struct Session {
+  bool   used = false;
+  String sid  = "";
+
+  String title  = "";       // this session's own last-known model
+  String g2Label = "";
+  float  g2Pct   = -1;
+  String rowR    = "";
+  String effort  = "";
+  String name    = "";      // header's left
+
+  String        busyText = "";
+  unsigned long busyAt   = 0;
+  String        eventText = "";
+  unsigned long eventAt   = 0;
+
+  unsigned long lastPushMs = 0;
+};
+
+Session sessions[MAX_SESSIONS];
+
+bool          quietHours    = false;  // host-computed: is it currently the quiet window?
+unsigned long lastAnyPushMs = 0;      // idle clock for quiet-hours - ANY session counts
+bool          everAnyPushed = false;
+
+int           lastShownSlot = -1;     // which array index is on screen right now
+unsigned long lastRotateMs  = 0;
 
 // ── Runtime ───────────────────────────────────────────────────
 unsigned long lastDraw  = 0;
@@ -101,19 +141,22 @@ String fmtAge(unsigned long ms) {
   return String(s / 3600) + "h";
 }
 
-bool dataStale() {
-  if (!everPushed) return true;
-  return ((millis() - lastPushMs) / 1000UL) > (unsigned long)STALE_AFTER_S;
+bool slotEventLive(const Session& s) {
+  if (s.eventText.length() == 0) return false;
+  return ((millis() - s.eventAt) / 1000UL) <= (unsigned long)EVENT_TTL_S;
 }
 
-bool eventLive() {
-  if (eventText.length() == 0) return false;
-  return ((millis() - eventAt) / 1000UL) <= (unsigned long)EVENT_TTL_S;
+bool slotBusyLive(const Session& s) {
+  if (s.busyText.length() == 0) return false;
+  return ((millis() - s.busyAt) / 1000UL) <= (unsigned long)BUSY_TTL_S;
 }
 
-bool busyLive() {
-  if (busyText.length() == 0) return false;
-  return ((millis() - busyAt) / 1000UL) <= (unsigned long)BUSY_TTL_S;
+// "Quiet a while" for THIS session specifically - shows its sleep row when it
+// is the one on screen. Distinct from shouldPowerDown() below, which is about
+// every session at once; one session going quiet must not blank the panel
+// while a different one is still actively being used.
+bool slotStale(const Session& s) {
+  return ((millis() - s.lastPushMs) / 1000UL) > (unsigned long)STALE_AFTER_S;
 }
 
 /**
@@ -126,10 +169,14 @@ bool busyLive() {
  * a quiet-hours boundary, this reads whatever the last real push said. That
  * mirrors every other host-computed value here (the 5h countdown has the same
  * limitation) and is the accepted cost of having no network stack and no NTP.
+ *
+ * Uses lastAnyPushMs - every session's idle clock at once - deliberately not
+ * whichever session happens to be on screen. One quiet session must not power
+ * off a panel that a DIFFERENT session is actively using.
  */
 bool shouldPowerDown() {
   if (!quietHours) return false;
-  return ((millis() - lastPushMs) / 1000UL) > (unsigned long)QUIET_IDLE_S;
+  return ((millis() - lastAnyPushMs) / 1000UL) > (unsigned long)QUIET_IDLE_S;
 }
 
 // Human-readable logging goes out with a '#' prefix so the host can tell it
@@ -142,6 +189,112 @@ void logf(const char* fmt, ...) {
   va_end(args);
   Serial.print("# ");
   Serial.println(buf);
+}
+
+// ── Session roster ────────────────────────────────────────────
+
+/** A session with no push in SESSION_GONE_S is assumed closed - dropped. */
+void pruneSessions() {
+  for (int i = 0; i < MAX_SESSIONS; i++) {
+    if (sessions[i].used && ((millis() - sessions[i].lastPushMs) / 1000UL) > (unsigned long)SESSION_GONE_S) {
+      sessions[i] = Session();
+    }
+  }
+}
+
+/** Indices of every occupied slot, in array order - stable as slots free up. */
+int listUsed(int* out) {
+  int n = 0;
+  for (int i = 0; i < MAX_SESSIONS; i++) if (sessions[i].used) out[n++] = i;
+  return n;
+}
+
+int findOrCreateSlot(const String& sid) {
+  for (int i = 0; i < MAX_SESSIONS; i++) {
+    if (sessions[i].used && sessions[i].sid == sid) return i;
+  }
+  for (int i = 0; i < MAX_SESSIONS; i++) {
+    if (!sessions[i].used) {
+      sessions[i] = Session();
+      sessions[i].sid  = sid;
+      sessions[i].used = true;
+      return i;
+    }
+  }
+  // Full - eight concurrent sessions is already a lot. Evict whichever has
+  // gone longest without a push rather than refuse the newest one.
+  int oldest = 0;
+  for (int i = 1; i < MAX_SESSIONS; i++) {
+    if (sessions[i].lastPushMs < sessions[oldest].lastPushMs) oldest = i;
+  }
+  sessions[oldest] = Session();
+  sessions[oldest].sid  = sid;
+  sessions[oldest].used = true;
+  return oldest;
+}
+
+/**
+ * Which slots belong to the group that should be shown right now, and how
+ * many. Attention beats working beats idle - the same "alert always wins"
+ * rule a single session already had, now deciding which SESSIONS get shown,
+ * not only what one session's status row displays.
+ */
+int groupMembers(int* out) {
+  int used[MAX_SESSIONS];
+  int n = listUsed(used);
+
+  int m = 0;
+  for (int i = 0; i < n; i++) if (slotEventLive(sessions[used[i]])) out[m++] = used[i];
+  if (m) return m;
+
+  for (int i = 0; i < n; i++) if (slotBusyLive(sessions[used[i]])) out[m++] = used[i];
+  if (m) return m;
+
+  for (int i = 0; i < n; i++) out[m++] = used[i];   // idle - everyone left
+  return m;
+}
+
+/**
+ * Pick which slot to show, advancing rotation on its own 3-second clock.
+ *
+ * If the currently-shown slot is no longer in the active group - it was
+ * promoted into attention, demoted out of it, or pruned entirely - snap to
+ * the front of the new group immediately rather than waiting for the next
+ * tick. Otherwise advance one step every ROTATE_INTERVAL_S, wrapping around.
+ *
+ * Entirely independent of the quota row's own 5h/1w alternation below - two
+ * separate rotations, two separate clocks, because they rotate two
+ * unrelated things (which session; which account metric).
+ */
+int pickSlotToShow() {
+  int group[MAX_SESSIONS];
+  int m = groupMembers(group);
+  if (m == 0) return -1;
+
+  int pos = -1;
+  for (int i = 0; i < m; i++) if (group[i] == lastShownSlot) { pos = i; break; }
+
+  if (pos < 0) {
+    lastShownSlot = group[0];
+    lastRotateMs  = millis();
+    return lastShownSlot;
+  }
+
+  if (m > 1 && millis() - lastRotateMs >= (unsigned long)ROTATE_INTERVAL_S * 1000UL) {
+    pos = (pos + 1) % m;
+    lastRotateMs = millis();
+  }
+  lastShownSlot = group[pos];
+  return lastShownSlot;
+}
+
+/** "2/5" - position of shownIdx among ALL active sessions, not just its group. */
+String positionLabel(int shownIdx) {
+  int used[MAX_SESSIONS];
+  int m = listUsed(used);
+  int n = 0;
+  for (int i = 0; i < m; i++) { n++; if (used[i] == shownIdx) break; }
+  return String(n) + "/" + String(m);
 }
 
 // ── Rendering ─────────────────────────────────────────────────
@@ -215,6 +368,34 @@ void drawBar(int y, float pct) {
   }
 }
 
+/**
+ * Row 1: the account quota, alternating 5h and weekly every ROTATE_INTERVAL_S.
+ *
+ * Deliberately global, not tied to any session - the quota is the same
+ * number for everyone under this login, so it does not belong to whichever
+ * session happens to be on screen. That is also why it keeps working once
+ * the roster is empty: see the m==0 branch in drawScreen().
+ *
+ * Only alternates if a weekly reading has actually arrived - an older host
+ * that never sends gauge3 just leaves the 5h row showing permanently, the
+ * same "absence degrades gracefully" rule every other field here follows.
+ */
+void drawQuotaRow() {
+  bool hasWeek = qwPct >= 0;
+  if (hasWeek && millis() - quotaRotateMs >= (unsigned long)ROTATE_INTERVAL_S * 1000UL) {
+    quotaShowWeek = !quotaShowWeek;
+    quotaRotateMs = millis();
+  }
+  bool showWeek = hasWeek && quotaShowWeek;
+  if (showWeek) {
+    drawRow3(ROW1_Y, qwLabel, qwReset, pctText(qwPct));
+    drawBar(BAR1_Y, qwPct);
+  } else {
+    drawRow3(ROW1_Y, q5Label, q5Reset, pctText(q5Pct));
+    drawBar(BAR1_Y, q5Pct);
+  }
+}
+
 // Spinner turns on the device, so a long turn keeps moving with no pushes.
 void drawBusy(const String& text) {
   static const char frames[] = {'|', '/', '-', '\\'};
@@ -228,17 +409,14 @@ void drawBusy(const String& text) {
 /**
  * Sleep, confined to the status row so the gauges stay readable.
  *
- * The old animation took the whole screen and grew its Z's from size 1 to 3.
- * There is no room for that in an 11-pixel row - a size-2 glyph is already 16
- * pixels tall - so what is left is a horizontal march with a slight rise. The
- * gauges surviving is worth more than the animation was: overnight is exactly
- * when you glance over casually, and the old behaviour showed nothing at all.
+ * sinceMs is the SLOT's own lastPushMs, not a global - each session in the
+ * roster reports its own quiet duration when it is the one on screen.
  */
-void drawSleepRow() {
+void drawSleepRow(unsigned long sinceMs) {
   display.setCursor(0, STATUS_TEXT_Y);
   display.print("(-_-)");
   display.setCursor(6 * CHAR_W, STATUS_TEXT_Y);
-  display.print(fmtAge(millis() - lastPushMs));
+  display.print(fmtAge(millis() - sinceMs));
 
   const unsigned long f = millis() / 300;
   for (int i = 0; i < 3; i++) {
@@ -252,10 +430,35 @@ void drawSleepRow() {
 }
 
 /**
+ * The bigger idle graphic for the m==0 screen - every session has aged out,
+ * so there is a whole lower half of the screen with nothing session-specific
+ * left to draw in it (context occupancy does not mean anything without a
+ * session). Reuses the pre-v3.1.0 growing-Z animation, which had exactly
+ * this much room before the header/footer redesigns took the rest of the
+ * screen for gauges - it fits again now that this is the only content below
+ * the quota row.
+ */
+void drawIdleGraphic() {
+  drawCenter(38, "(-_-)");
+  const unsigned long f = millis() / 300;
+  for (int i = 0; i < 3; i++) {
+    int phase = (int)((f + i * 3) % 9);
+    if (phase > 5) continue;
+    display.setTextSize(1 + phase / 2);
+    int zx = 44 + phase * 10;
+    if (zx <= SCREEN_W - CHAR_W) {
+      display.setCursor(zx, 56 - phase * 6);
+      display.print('Z');
+    }
+  }
+  display.setTextSize(1);
+}
+
+/**
  * force=true bypasses the power-down gate for exactly one call - used by the
  * BOOT button so it is not completely dead at 3am. It does not stay awake:
  * the very next loop() tick re-applies shouldPowerDown() and, since pressing
- * a button does not touch lastPushMs, puts it straight back to sleep. That
+ * a button does not touch lastAnyPushMs, puts it straight back to sleep. That
  * gives a brief flash to confirm the device is alive, not a sustained peek.
  */
 void drawScreen(bool force = false) {
@@ -273,15 +476,52 @@ void drawScreen(bool force = false) {
     displayAsleep = false;
   }
 
-  // A live banner ("Your turn", "Claude needs input") inverts the WHOLE
-  // panel, not just its own row - the loudest possible signal that it is
-  // your move. invertDisplay() is a single controller command (SH110X_
-  // INVERTDISPLAY) that flips every pixel's polarity in hardware; it does
-  // not touch the framebuffer, so everything drawn below - header, gauges,
-  // bars, footer - comes out inverted for free. Toggled only on change, not
-  // resent every redraw, to avoid spamming the command line for up to 5
-  // minutes (EVENT_TTL_S) straight.
-  const bool inverted = eventLive();
+  pruneSessions();
+
+  int usedList[MAX_SESSIONS];
+  int m = listUsed(usedList);
+
+  if (m == 0) {
+    const bool inverted = false;
+    if (inverted != displayInverted) { display.invertDisplay(inverted); displayInverted = inverted; }
+
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SH110X_WHITE);
+
+    if (!everAnyPushed) {
+      // Never seen ANY data at all, this boot - nothing to show, not even a
+      // quota reading.
+      drawCenter(20, "Waiting for data");
+      drawCenter(32, "over USB serial");
+      display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
+      drawLR(BOTTOM_Y, "Clauled", "v" CLAULED_VERSION);
+    } else {
+      // Every session that WAS active has aged out (SESSION_GONE_S). The
+      // account quota and the last known model both survive that - they were
+      // never session data to begin with - so this is not a blank screen,
+      // just an honest "nobody's here right now."
+      drawCenter(HEADER_Y, "Idle");
+      display.drawLine(0, HEAD_RULE_Y, SCREEN_W - 1, HEAD_RULE_Y, SH110X_WHITE);
+      drawQuotaRow();
+      drawIdleGraphic();
+      display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
+      drawLR(BOTTOM_Y, lastModel, "");
+    }
+    display.display();
+    return;
+  }
+
+  int shownIdx = pickSlotToShow();
+  Session& s = sessions[shownIdx];
+
+  // A live banner on the session BEING SHOWN inverts the WHOLE panel, not
+  // just its own row - the loudest possible signal that it is your move.
+  // invertDisplay() is a single controller command (SH110X_INVERTDISPLAY)
+  // that flips every pixel's polarity in hardware; it does not touch the
+  // framebuffer, so everything drawn below comes out inverted for free.
+  // Toggled only on change, not resent every redraw.
+  const bool inverted = slotEventLive(s);
   if (inverted != displayInverted) {
     display.invertDisplay(inverted);
     displayInverted = inverted;
@@ -291,46 +531,36 @@ void drawScreen(bool force = false) {
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
 
-  if (!everPushed) {
-    drawCenter(20, "Waiting for data");
-    drawCenter(32, "over USB serial");
-    display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
-    drawLR(BOTTOM_Y, "Clauled", "v" CLAULED_VERSION);
-    display.display();
-    return;
-  }
-
-  // Header is just the session, centred. Model and effort live in the footer
-  // now - the header's only job is telling you which work this is.
-  drawCenter(HEADER_Y, session);
+  // Header: session name left, position among ALL active sessions right -
+  // "2/5" even while only cycling the subset that needs attention, so the
+  // number tells you the true scale, not just how big today's rotation is.
+  drawLR(HEADER_Y, s.name, positionLabel(shownIdx));
   display.drawLine(0, HEAD_RULE_Y, SCREEN_W - 1, HEAD_RULE_Y, SH110X_WHITE);
 
-  // Each gauge is a three-column line and a bar. The row detail pairs with its
-  // gauge: rowL is the quota's reset countdown, rowR the context's token counts.
-  drawRow3(ROW1_Y, g1Label, rowL, pctText(g1Pct));
-  drawBar(BAR1_Y, g1Pct);
+  drawQuotaRow();   // account-level - same content regardless of which session this is
 
-  drawRow3(ROW2_Y, g2Label, rowR, pctText(g2Pct));
-  drawBar(BAR2_Y, g2Pct);
+  drawRow3(ROW2_Y, s.g2Label, s.rowR, pctText(s.g2Pct));
+  drawBar(BAR2_Y, s.g2Pct);
 
   // Status row resolves in priority order: an alert always wins over a
   // spinner, a spinner over sleep. Nothing at all is a legitimate state - it
   // means a turn ended more than EVENT_TTL_S ago but the host is still alive.
   //
-  // The banner text draws NORMALLY here (plain white, same as everything
-  // else) - the whole screen is already hardware-inverted above when a banner
-  // is live, so inverting this one row again would cancel out and leave the
-  // text invisible against its own now-white background.
-  if      (eventLive()) drawCenter(STATUS_TEXT_Y, eventText);
-  else if (busyLive())  drawBusy(busyText);
-  else if (everPushed && dataStale()) drawSleepRow();
+  // The banner text draws NORMALLY here (plain white) - the whole screen is
+  // already hardware-inverted above when a banner is live, so inverting this
+  // one row again would cancel out and leave the text invisible.
+  if      (slotEventLive(s)) drawCenter(STATUS_TEXT_Y, s.eventText);
+  else if (slotBusyLive(s))  drawBusy(s.busyText);
+  else if (slotStale(s))     drawSleepRow(s.lastPushMs);
 
   display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
 
-  // Model left, effort right. Cost used to sit here; it only duplicated a
-  // number Claude Code's own UI already shows, and the corner is more useful
-  // holding the model now that it no longer fits in the header.
-  drawLR(BOTTOM_Y, title, effort);
+  // Model left, effort right. The model falls back to the last one seen from
+  // ANY session when this particular session has not reported one yet - hook
+  // payloads never carry the model, so a session whose first-ever push is a
+  // hook would otherwise show a blank left corner until its own statusline
+  // eventually fires. A slightly-stale model name reads better than a blank.
+  drawLR(BOTTOM_Y, s.title.length() ? s.title : lastModel, s.effort);
 
   display.display();
 }
@@ -350,13 +580,15 @@ void applyGauge(JsonVariantConst g, String& label, float& pct) {
 }
 
 void sendStatus() {
+  int usedList[MAX_SESSIONS];
   JsonDocument doc;
   doc["ok"]            = true;
   doc["version"]       = CLAULED_VERSION;
   doc["display_ok"]    = displayOk;
   doc["uptime"]        = millis() / 1000;
-  doc["last_push_age"] = everPushed ? (long)((millis() - lastPushMs) / 1000UL) : -1;
-  doc["quiet_sleep"]    = displayAsleep;
+  doc["last_push_age"] = everAnyPushed ? (long)((millis() - lastAnyPushMs) / 1000UL) : -1;
+  doc["quiet_sleep"]   = displayAsleep;
+  doc["sessions"]      = listUsed(usedList);
   doc["schema"]        = SCHEMA_VERSION;
   String out;
   serializeJson(doc, out);
@@ -377,49 +609,76 @@ void handleLine(const String& line) {
   const char* cmd = root["cmd"] | "";
   if (strcmp(cmd, "status") == 0) { sendStatus(); return; }
 
-  // Merge, never replace: a hook pushing only "busy" must not wipe the gauges,
-  // and the statusline pushing only gauges must not clear the busy state.
-  if (!root["title"].isNull())   title   = field(root["title"], title);
-  if (!root["session"].isNull()) session = field(root["session"], session);
-  // quiet is a state flag, not optional data - unlike everything else here, an
-  // ABSENT key leaves it unchanged, but the host is expected to send it on
-  // every push (true or false) so a stale "true" cannot outlive quiet hours.
-  if (!root["quiet"].isNull())   quietHours = root["quiet"].as<bool>();
-  applyGauge(root["gauge1"], g1Label, g1Pct);
-  applyGauge(root["gauge2"], g2Label, g2Pct);
+  // quiet is global, not per-session - a property of wall-clock time, the
+  // same regardless of which session's push happened to carry it. Unlike
+  // everything below, an ABSENT key leaves it unchanged, but the host sends
+  // it on every push (true or false) so a stale "true" cannot outlive
+  // quiet hours.
+  if (!root["quiet"].isNull()) quietHours = root["quiet"].as<bool>();
+
+  // gauge1/row.left (the 5h account quota) and gauge3 (the weekly one) are
+  // ALSO global, for the same reason quiet is - the same number regardless
+  // of which session reports it. Every push updates them, whichever session
+  // it came from.
+  JsonVariantConst g1 = root["gauge1"];
+  if (!g1.isNull()) {
+    if (!g1["label"].isNull()) q5Label = field(g1["label"], q5Label);
+    if (!g1["pct"].isNull())   q5Pct   = g1["pct"].as<float>();
+  }
+  JsonVariantConst g3 = root["gauge3"];
+  if (!g3.isNull()) {
+    if (!g3["label"].isNull()) qwLabel = field(g3["label"], qwLabel);
+    if (!g3["pct"].isNull())   qwPct   = g3["pct"].as<float>();
+    if (!g3["reset"].isNull()) qwReset = field(g3["reset"], qwReset);
+  }
+
+  // No sid at all is not an error - it is the pre-multi-session contract,
+  // and it still works: everything with no sid shares the one "" slot, which
+  // is exactly the old single-session behaviour, M pinned at 1.
+  String sid = field(root["sid"], "");
+  int idx = findOrCreateSlot(sid);
+  Session& s = sessions[idx];
+
+  // Merge, never replace: a hook pushing only "busy" must not wipe this
+  // session's gauges, and its statusline pushing only gauges must not clear
+  // its busy state.
+  if (!root["title"].isNull()) { s.title = field(root["title"], s.title); lastModel = s.title; }
+  if (!root["session"].isNull()) s.name  = field(root["session"], s.name);
+  applyGauge(root["gauge2"], s.g2Label, s.g2Pct);
 
   JsonVariantConst r = root["row"];
   if (!r.isNull()) {
-    rowL = field(r["left"],  rowL);
-    rowR = field(r["right"], rowR);
+    if (!r["left"].isNull()) q5Reset = field(r["left"], q5Reset);
+    s.rowR = field(r["right"], s.rowR);
   }
 
-  // footer.left is no longer read - it used to carry cost, which is gone. A
-  // pusher still sending it does no harm; the value is simply never drawn.
+  // footer.left is not read - it used to carry cost, which is gone. A pusher
+  // still sending it does no harm; the value is simply never drawn.
   JsonVariantConst f = root["footer"];
-  if (!f.isNull() && !f["right"].isNull()) effort = field(f["right"], effort);
+  if (!f.isNull() && !f["right"].isNull()) s.effort = field(f["right"], s.effort);
 
-  // An empty string clears the spinner - that is how Stop ends a turn.
+  // An empty string clears this session's spinner - that is how Stop ends a turn.
   if (!root["busy"].isNull()) {
-    busyText = field(root["busy"], "");
-    busyAt   = millis();
-    // Going busy also clears any banner: if Claude is working, it is not your
-    // turn. Without this a "Your turn" banner outranks every spinner beneath it
-    // for its full TTL, and the display looks frozen mid-task.
-    if (busyText.length()) eventText = "";
+    s.busyText = field(root["busy"], "");
+    s.busyAt   = millis();
+    // Going busy also clears this session's own banner: if it is working, it
+    // is not your turn on THAT one. Without this a "Your turn" banner
+    // outranks every spinner beneath it for its full TTL.
+    if (s.busyText.length()) s.eventText = "";
   }
 
   JsonArrayConst evs = root["events"];
   if (!evs.isNull()) {
     for (JsonObjectConst e : evs) {
-      eventText = String((const char*)(e["text"] | "")).substring(0, FIELD_MAX);
-      eventAt   = millis();
-      if (eventText.length()) busyText = "";   // an alert supersedes the spinner
+      s.eventText = String((const char*)(e["text"] | "")).substring(0, FIELD_MAX);
+      s.eventAt   = millis();
+      if (s.eventText.length()) s.busyText = "";   // an alert supersedes the spinner
     }
   }
 
-  lastPushMs = millis();
-  everPushed = true;
+  s.lastPushMs  = millis();
+  lastAnyPushMs = millis();
+  everAnyPushed = true;
 
   reply("{\"ok\":true}");
   drawScreen();
@@ -444,6 +703,20 @@ void pumpSerial() {
     }
     lineBuf += c;
   }
+}
+
+/** Any reason to redraw faster than the 1 Hz baseline? Read-only - unlike
+ *  pickSlotToShow()/drawQuotaRow(), never advances a rotation clock, so
+ *  loop() can call it freely without corrupting either 3-second timing. */
+bool anyNeedsFastCadence() {
+  int used[MAX_SESSIONS];
+  int n = listUsed(used);
+  if (n == 0) return everAnyPushed;   // the m==0 idle graphic animates too
+  if (n > 1) return true;             // rotation needs checking reasonably promptly
+  for (int i = 0; i < n; i++) {
+    if (slotBusyLive(sessions[used[i]]) || slotStale(sessions[used[i]])) return true;
+  }
+  return false;
 }
 
 // ── Setup / loop ──────────────────────────────────────────────
@@ -477,22 +750,26 @@ void setup() {
 void loop() {
   pumpSerial();
 
-  // The spinner and the sleep animation need a faster cadence than the once-a
-  // second the footer would otherwise require. Once powered down there is
-  // nothing to animate, so drop back to 1 Hz rather than polling uselessly.
-  const bool animating = !displayAsleep && ((everPushed && dataStale()) || busyLive());
+  // Once powered down there is nothing to animate, so drop back to 1 Hz
+  // rather than polling uselessly.
+  const bool animating = !displayAsleep && anyNeedsFastCadence();
   if (millis() - lastDraw >= (animating ? 300UL : 1000UL)) {
     drawScreen();
     lastDraw = millis();
   }
 
-  // BOOT button clears a stuck banner or spinner early, and forces one frame
-  // even during a quiet-hours power-down - see drawScreen(force).
+  // BOOT clears whichever session's banner/spinner is CURRENTLY ON SCREEN,
+  // not every session's - dismissing what you are looking at should not
+  // silently dismiss two other sessions' "Your turn" you have not seen yet.
+  // Also forces one frame even during a quiet-hours power-down - see
+  // drawScreen(force).
   static bool lastBtn = HIGH;
   bool btn = digitalRead(BOOT_BTN);
   if (btn == LOW && lastBtn == HIGH) {
-    eventText = "";
-    busyText  = "";
+    if (lastShownSlot >= 0 && lastShownSlot < MAX_SESSIONS && sessions[lastShownSlot].used) {
+      sessions[lastShownSlot].eventText = "";
+      sessions[lastShownSlot].busyText  = "";
+    }
     drawScreen(true);
     delay(200);
   }

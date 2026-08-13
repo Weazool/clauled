@@ -18,39 +18,90 @@ Match on that rather than hardcoding a port, and it survives being moved.
 One JSON object per line, terminated with `\n`:
 
 ```json
-{"v":3,"session":"clauled-pusher","title":"Sonnet 5","quiet":false,"gauge1":{"label":"5h lim","pct":55},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
+{"v":3,"sid":"a1b2c3d4","session":"clauled-pusher","title":"Sonnet 5","quiet":false,"gauge1":{"label":"5h","pct":55},"gauge3":{"label":"1w","pct":21,"reset":"3d4h"},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
 ```
 
-| Field | Type | Renders as |
-|---|---|---|
-| `v` | int | Schema version, currently `3`. A mismatch is rejected, never guessed at. |
-| `session` | string | Header — which session, centred |
-| `title` | string | Footer, left — the model |
-| `quiet` | bool | Not rendered directly — see Quiet hours below |
-| `gauge1` / `gauge2` | object | `{ "label": string, "pct": number }`. `pct` below 0 shows `--` with an empty bar. |
-| `row` | object | `{ "left": string, "right": string }` — `left` pairs with `gauge1`, `right` with `gauge2` |
-| `footer` | object | `{ "right": string }` — the effort level. `left` is accepted but ignored — see Notes. |
-| `busy` | string | Spinner text. **Empty string clears it.** |
-| `events` | array | `[{ "text": string }]` — raises an inverted banner |
+| Field | Type | Scope | Renders as |
+|---|---|---|---|
+| `v` | int | — | Schema version, currently `3`. A mismatch is rejected, never guessed at. |
+| `sid` | string | key | Which session this push belongs to — see **Multiple sessions** below |
+| `session` | string | per-session | Header, left |
+| `title` | string | per-session | Footer, left — the model |
+| `quiet` | bool | global | Not rendered directly — see **Quiet hours** below |
+| `gauge1` / `row.left` | object / string | global | Row 1, alternating with `gauge3` — see **Multiple sessions** |
+| `gauge3` | object | global | `{ "label", "pct", "reset" }` — the other half of row 1's alternation |
+| `gauge2` / `row.right` | object / string | per-session | Row 2 — context occupancy |
+| `footer` | object | per-session | `{ "right": string }` — the effort level. `left` is accepted but ignored — see Notes. |
+| `busy` | string | per-session | Spinner text. **Empty string clears it.** |
+| `events` | array | per-session | `[{ "text": string }]` — raises an inverted banner |
 
-`session` and `footer.right` were added in firmware v3.3.0; `title` moved from
-the header to the footer in v3.4.0, and `footer.left` (cost) stopped being
-drawn there; `quiet` was added in v3.5.0. All of these are additive or
-render-only — the field names already established keep their meaning, so a
-v3.2.0-or-later pusher still renders correctly with no change, and any pusher
-that never sends `quiet` simply never triggers the quiet-hours power-down.
+**"global" fields are the same value regardless of which session's push
+carries them** — the account quota does not belong to any one session, so the
+last push to set it wins, full stop, no merge-per-session. **"per-session"
+fields are tracked separately per `sid`** — see below.
+
+`sid`, `gauge3` and the per-session scoping were added in v3.7.0; `quiet` in
+v3.5.0; `session`/`footer.right` in v3.3.0. All additive or render-only — a
+v3.2.0-or-later pusher that never sends `sid` still renders correctly, landing
+everything in the device's one shared fallback slot exactly as it always did.
 
 Every string is truncated to **21 characters**, one screen line. `busy` should
 stay under 19 to leave room for the spinner.
 
+## Multiple sessions
+
+The device tracks up to **8 concurrent sessions**, one per distinct `sid`,
+and decides on its own which one to show — this needs no host-side
+coordination beyond tagging each push with the session it came from.
+
+**A session with no push in 15 minutes (`SESSION_GONE_S`) is dropped.** A
+push with no `sid` at all lands in a shared fallback slot, which is exactly
+the pre-v3.7.0 single-session behaviour — nothing breaks for a pusher that
+has not been updated.
+
+**Which session is shown rotates every 3 seconds (`ROTATE_INTERVAL_S`)**,
+picked by priority — the same "alert always wins" rule a single session
+already had, now deciding which SESSION gets shown, not only what one
+session's status row displays:
+
+1. Any session with a live `events` banner — rotate among those, ignore the rest
+2. Else any session with a live `busy` spinner — rotate among those
+3. Else every remaining session — rotate among all of them
+
+If the active group changes — a session gets a new banner, or the one you
+were looking at falls out of it — the device snaps to the new group
+immediately rather than waiting for the next tick.
+
+**The header's right side is `N/M`** — position among *every* active session,
+not just the ones currently being rotated. Two sessions needing attention out
+of five total shows `"2/5"` then `"4/5"`, not `"1/2"` then `"2/2"` — the
+number always tells you the true scale.
+
+**Once every session has aged out, the panel does not go blank.** The account
+quota (`gauge1`/`gauge3`) and the last known model survive the roster
+emptying — they were never session data to begin with — so the header reads
+`"Idle"`, row 1 keeps alternating exactly as before, and a graphical idle
+indicator fills the lower half of the screen. Nothing has ever been pushed at
+all shows the original `"Waiting for data"` screen instead — those are two
+different states.
+
+**The model always shows in the footer, even for a session that has not
+reported its own yet.** Hook payloads never carry the model (see Notes), so a
+session whose first-ever push is a hook would otherwise show a blank left
+corner until its own statusline eventually fires. It falls back to the last
+model seen from *any* session rather than show nothing.
+
+`{"v":3,"cmd":"status"}` reports the current roster size as `sessions` — see
+**Status probe** below.
+
 ## Screen layout
 
 ```
-      clauled-pusher                session, centred
+clauled-pusher                 2/5      session | N/M
 ────────────────────────────────
-5h lim        4h33m        55%      gauge1.label | row.left | gauge1.pct
-███████████████████░░░░░░░░░░░░░    gauge1.pct
-ctx         357k/1M        45%      gauge2.label | row.right | gauge2.pct
+5h           4h33m        55%           gauge1.label | row.left | gauge1.pct
+███████████████████░░░░░░░░░░░░░        gauge1.pct   (alternates with gauge3
+ctx         357k/1M        45%           every ROTATE_INTERVAL_S)
 ███████████████░░░░░░░░░░░░░░░░░    gauge2.pct
 / Running Bash                      busy / events / sleep
 ────────────────────────────────
@@ -58,17 +109,17 @@ Sonnet 5                 xhigh      title | footer.right
 ```
 
 **Each data row is three columns**: the gauge label flush left, its paired `row`
-side centred, the percentage flush right. The device places them — the host just
-supplies the three strings.
+(or, for `gauge3`, its own bundled `reset`) centred, the percentage flush
+right. The device places them — the host just supplies the strings.
 
 The middle is centred on the **screen**, not on the gap, so it does not shift
 when the percentage widens. It moves only to avoid a collision, always keeping
 one blank character on each side, and is dropped entirely if even that will not
 fit. The label and the percentage are never sacrificed.
 
-Keep labels short. `5h lim` (6 characters) is the shipped example - `5h reset`
-(8) is about the practical limit before
-the middle column is pushed off centre on every render.
+Keep labels short. `5h` and `1w` (2 characters) are the shipped examples —
+`5h reset` (8) is about the practical limit before the middle column is pushed
+off centre on every render.
 
 The status row resolves in priority order:
 
@@ -150,7 +201,7 @@ does not start with `{`.
 ```
 
 ```json
-{"ok":true,"version":"3.6.1","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"schema":3}
+{"ok":true,"version":"3.7.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"sessions":2,"schema":3}
 ```
 
 `display_ok` is meaningful only for I2C modules. **SPI has no acknowledgement,
@@ -159,30 +210,43 @@ so it always reports `true`** — only pixels confirm a working SPI display.
 `quiet_sleep` is `true` while the panel is powered off for quiet hours. Check
 this before assuming an unresponsive-looking device is broken at 2am.
 
+`sessions` is how many are currently in the roster — 0 either means nothing
+has ever been pushed, or every session has aged out; `last_push_age` tells
+you which (`-1` only in the former case).
+
 Use this to confirm a port really is a Clauled device before pushing to it.
 
 ## Semantics that matter
 
-**Everything merges.** A hook pushing only `busy` must not wipe the gauges, and
-the statusline pushing only gauges must not clear the spinner. Send partial
-payloads freely — that is the intended usage.
+**Everything merges — per session for per-session fields, globally for global
+ones.** A hook pushing only `busy` must not wipe that session's gauges, and
+the statusline pushing only gauges must not clear its busy state. `gauge1`/
+`gauge3`/`quiet`, being global, merge against the single shared copy
+regardless of which session's push carries them. Send partial payloads
+freely — that is the intended usage.
 
 **Gauges are independent.** One feed failing leaves its gauge alone while the
 other keeps working. Never blank the screen because one source is unavailable.
 
-**The device animates by itself.** The spinner and the sleep animation run on
-device time, so a long turn keeps moving with no pushes at all.
+**The device animates by itself.** The spinner, the sleep row, the rotation
+between sessions and the quota row's own 5h/1w alternation all run on device
+time — a long turn, or a quiet stretch with several sessions open, keeps
+moving with no pushes at all.
 
-**Sleep does not take the screen.** It renders in the status row only, so the
-gauges stay readable while the host is away.
+**A quiet session's sleep row does not take the screen.** It renders in the
+status row only, when that particular session is the one being shown, so the
+gauges stay readable and other sessions keep rotating normally.
 
-**Busy self-expires** after 3 minutes, so a missed `Stop` hook cannot leave the
-spinner running forever. Banners expire after 5 minutes. The BOOT button clears
-either immediately.
+**Busy self-expires** after 3 minutes per session, so a missed `Stop` hook
+cannot leave that one spinning forever. Banners expire after 5 minutes. The
+BOOT button clears whichever session is *currently on screen* — not the whole
+roster — so acknowledging one session's banner does not silently dismiss a
+different session's "Your turn" you have not seen yet.
 
-**Sleep is automatic.** No push for `STALE_AFTER_S` (default 300s) and the
-device switches to the sleep animation by itself. The host does not signal it —
-a sleeping PC cannot.
+**A session goes quiet automatically.** No push for `STALE_AFTER_S` (default
+300s) and that session's status row switches to the sleep animation on its
+own. After `SESSION_GONE_S` (default 900s) with still nothing, it is dropped
+from the roster entirely — see **Multiple sessions** above.
 
 ## Example
 
@@ -248,3 +312,14 @@ display on every push from whatever the trigger's payload provides, merging in
 only the field that push exists to add. The one field this cannot fix is the
 model on a hook-only turn: Claude Code's hook payloads never carry it, only the
 statusline does, so it is unavoidably cached rather than live there.
+
+**`sid` should key off `session_id`**, present in both statusline and hook
+payloads. A short prefix (8 hex characters is plenty) is enough — the device
+only needs it to be stable and distinct per session, not globally unique.
+
+**If you cache anything per-session on the host** — the model, for the
+staleness reason above — **key that cache by `sid` too, not one shared file.**
+Two sessions can genuinely be on different models at once; a single cache
+would leak session A's model into session B's display the moment they
+diverge. `gauge1`/`gauge3`/`quiet`, by contrast, are correct to cache
+globally — they are the same value for every session under one login.
