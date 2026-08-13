@@ -221,7 +221,7 @@ does not start with `{`.
 ```
 
 ```json
-{"ok":true,"version":"3.9.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"sessions":2,"roster":[{"sid":"a1b2c3d4","name":"clauled-pusher","age":3,"busy":"Running Bash"},{"sid":"e5f6a7b8","name":"other-project","age":47,"event":"Your turn"}],"quota":{"5h":57,"1w":34,"alternating":true,"showing":"1w"},"schema":3}
+{"ok":true,"version":"3.9.1","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"sessions":2,"roster":[{"sid":"a1b2c3d4","name":"clauled-pusher","age":3,"busy":"Running Bash"},{"sid":"e5f6a7b8","name":"other-project","age":47,"event":"Your turn"}],"quota":{"5h":57,"1w":34,"alternating":true,"showing":"1w"},"schema":3}
 ```
 
 `display_ok` is meaningful only for I2C modules. **SPI has no acknowledgement,
