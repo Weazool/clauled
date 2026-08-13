@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v3.8.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v3.9.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -60,6 +60,8 @@ All pins configurable in `src/config.h`. Safe GPIOs: 0, 1, 3, 4, 5, 6, 7, 10 —
 | `DISPLAY_SPI` | Defined for 7-pin SPI; comment out for 4-pin I2C |
 | `OLED_MOSI` / `OLED_CLK` / `OLED_DC` / `OLED_RST` / `OLED_CS` | SPI pins |
 | `SDA_PIN` / `SCL_PIN` / `OLED_ADDR` | I2C pins and address |
+| `BUSY_TTL_S` | Spinner self-expires this long after the last activity push (default 90) |
+| `EVENT_TTL_S` | "Your turn" banner self-expires after this (default 300) |
 | `STALE_AFTER_S` | No push for a session this long → shows it as quiet (default 300) |
 | `SESSION_GONE_S` | No push for a session this long → drops it from the roster (default 900) |
 | `UNCONFIRMED_GONE_S` | No title/context EVER shown for a session this long → drops it much sooner (default 120) |
@@ -100,14 +102,14 @@ A slot only appears if a push actually carries something session-specific (a mod
 
 **Middle row is the status line**: what Claude is doing (`/ Running Bash`), or when it's your turn, **the header and this row invert** — `Your turn` / `Claude needs input`, the loudest signal the device has, without touching the gauges. BOOT clears whichever session is currently shown, not the whole roster — dismissing one does not silently dismiss a different session's pending banner.
 
-**A session idle 5+ minutes** shows `(-_-)` and how long it's been quiet in its own status row, gauges still visible; past 15 minutes it drops out of the roster. A session that never shows a model or real context at all drops out much sooner — 2 minutes — since a genuine session reliably picks up one of those within its first completed turn. **Once every session has aged out**, the header reads `Idle`, the quota row keeps alternating, and a bigger idle graphic fills the lower half — the account quota and the last known model are not really "session data," so they do not disappear along with the roster. **During quiet hours**, idle past `QUIET_IDLE_S` with nothing from *any* session, the panel powers fully off (`SH110X_DISPLAYOFF`) — configure the window on the [clauled-pusher](https://github.com/Weazool/clauled-pusher) side. Any push wakes it instantly; BOOT forces a brief flash.
+**A session idle 5+ minutes** shows `(-_-)` and how long it's been quiet in its own status row, gauges still visible; past 15 minutes it drops out of the roster. A session that never shows a model or real context at all drops out much sooner — 2 minutes — since a genuine session reliably picks up one of those within its first completed turn. **Once every session has aged out**, the header reads `Idle`, the quota row keeps alternating, three Z's drift up the lower half, and the model stays in the corner — the account quota and the last known model are not really "session data," so they do not disappear along with the roster. **During quiet hours**, idle past `QUIET_IDLE_S` with nothing from *any* session, the panel powers fully off (`SH110X_DISPLAYOFF`) — configure the window on the [clauled-pusher](https://github.com/Weazool/clauled-pusher) side. Any push wakes it instantly; BOOT forces a brief flash.
 
 ## Sending it data
 
 Anything that writes to a serial port. See [API.md](API.md) for the protocol, or install [clauled-pusher](https://github.com/Weazool/clauled-pusher) for the real thing.
 
 ```bash
-node -e "const{openSync,writeSync,closeSync}=require('fs');const fd=openSync('\\\\\\\\.\\\\COM8','w');writeSync(fd,JSON.stringify({v:3,gauge2:{label:'Context',pct:74}})+'\n');closeSync(fd)"
+node -e "const{openSync,writeSync,closeSync,constants:C}=require('fs');const fd=openSync('\\\\\\\\.\\\\COM8',C.O_WRONLY);writeSync(fd,'\n'+JSON.stringify({v:3,gauge2:{label:'Context',pct:74}})+'\n');closeSync(fd)"
 ```
 
 ## Troubleshooting
@@ -127,6 +129,8 @@ node -e "const{openSync,writeSync,closeSync}=require('fs');const fd=openSync('\\
 **Completely dark, not even the sleeping face.** Check `quiet_sleep` on the status probe — `true` means quiet-hours power-down working as intended. Any push wakes it.
 
 **Gauge 1 shows `--`.** No `rate_limits` yet — arrives on a later render.
+
+**Row 1 never alternates, only 5h shows.** No weekly reading has reached the device, so there is nothing to alternate with — this is correct behaviour, not a stuck rotation. Check `quota.alternating` on the status probe (or run `doctor`, which prints it). The weekly figure comes from a statusline payload's `rate_limits` or from the 7d rate-limit headers on an authenticated refresh; if your setup never renders a statusline, a token is what supplies it.
 
 **Header shows `Idle` instead of a session.** Every session has been quiet for 15+ minutes and dropped from the roster — normal once Claude Code closes or a session goes untouched that long. Check `sessions` on the status probe; any new push brings it back.
 

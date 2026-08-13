@@ -11,6 +11,69 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-08-13
+
+**Fixes the bug underneath most of the others: the device could not receive a
+full-size push at all.**
+
+### Fixed
+- **The USB serial receive buffer was smaller than a display push.**
+  arduino-esp32 allocates a 256-byte RX queue for USB CDC by default
+  (`HWCDC::begin`: "RX Buffer default has 256 bytes if not preset"). A full
+  display push is around 300 bytes. Measured on real hardware by pushing
+  increasing sizes and checking which arrived: **everything up to 261 bytes
+  landed, everything from 301 bytes up was lost.** The tail was dropped, so
+  the line never got its newline, so it sat in the line buffer and the *next*
+  push was appended to the fragment and lost too — and once the fragments
+  passed `LINE_MAX` the overflow latch discarded good lines as well. A live
+  round trip answered a well-formed 62-byte push with
+  `{"error":"line too long"}`.
+
+  The host saw none of this: every write genuinely succeeded. The visible
+  result was a display that went minutes without updating, sessions missing
+  from the roster, quota rows stuck at `--`, effort never appearing, and an
+  idle screen with no readings on it — all of which had been chased as
+  separate faults. `Serial.setRxBufferSize(LINE_MAX)` before `begin()`
+  presets the queue, which `begin()` then leaves alone. Re-running the size
+  sweep after the fix: every size from 81 to 601 bytes lands, none lost.
+- **A partial line no longer poisons the ones after it.** `pumpSerial()` now
+  treats a `{` arriving mid-buffer as the start of a new message and discards
+  the fragment in front of it. Every message in this protocol is a JSON
+  object and none contains an unescaped `{` after the first character, so
+  this is unambiguous. Verified by deliberately writing a 3000-byte
+  unterminated fragment and confirming the very next ordinary push still
+  landed.
+
+### Changed
+- **The idle screen is quieter and more useful.** The `(-_-)` face is gone,
+  the footer rule is gone, and the sleep animation is now **three** Z's -
+  always exactly three, drifting up and right as they grow, on a path bounded
+  clear of the quota bar above and the model line below. The quota row was
+  always drawn here; it now has readings to show, because pushes carrying
+  them arrive.
+
+Also: makes row 1's state observable, and stops a finished session claiming
+it is still working.
+
+### Added
+- **`quota` on the status probe** — `{"5h", "1w", "alternating", "showing"}`.
+  "Row 1 is not alternating" and "row 1 is alternating but you happened to
+  look twice in the same half of the cycle" are indistinguishable on the
+  glass, and until now there was no way to tell them apart without filming
+  the screen. `alternating` is false exactly when no weekly reading has
+  reached the device, which is the real reason it ever looks stuck.
+  `doctor` prints all of it.
+
+### Changed
+- **`BUSY_TTL_S` is 90s, was 180s.** This is the backstop that ends a
+  spinner when the `Stop` push that should have ended it never arrived. Three
+  minutes of a finished session insisting it was still working is worse than
+  a spinner that stops early during a long stretch with no tool calls — the
+  first states something false, the second just stops stating anything.
+- **`BUSY_TTL_S` and `EVENT_TTL_S` moved to `config.h`**, next to the other
+  timing knobs, instead of sitting among the protocol limits in `main.cpp`.
+  They are behaviour tunables, and they now read as such.
+
 ## [3.8.0] - 2026-08-13
 
 Four fixes and a rotation-policy change, all found and verified against the

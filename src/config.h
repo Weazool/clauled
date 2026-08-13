@@ -32,6 +32,17 @@
 #define OLED_ADDR           0x3C
 
 // ── Display behaviour ─────────────────────────────────────────
+// Every one of these is a BACKSTOP, not the primary mechanism. The host
+// explicitly clears a spinner (Stop sends busy:"") and supersedes a banner,
+// so in normal operation nothing here should ever be what ends a state -
+// these only decide how long a state survives if the push that was supposed
+// to end it never arrived.
+#define BUSY_TTL_S           90   // spinner self-expires this long after the last busy push.
+                                   // Was 180. A false "working" on an idle session is more
+                                   // misleading than a spinner that stops early during a long
+                                   // stretch with no tool calls, and 3 minutes of it was a lot.
+#define EVENT_TTL_S         300   // "Your turn" banner self-expires after this. Normally cleared
+                                   // far sooner - the next prompt's busy push supersedes it.
 #define STALE_AFTER_S       300   // no push for a session this long -> show it as quiet
 #define SESSION_GONE_S      900   // no push for a session this long -> drop it from the roster
 #define UNCONFIRMED_GONE_S  120   // a slot that has NEVER shown a title or real context (see

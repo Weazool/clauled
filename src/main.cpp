@@ -61,9 +61,8 @@
 #define SCHEMA_VERSION   3
 #define LINE_MAX         2048
 #define FIELD_MAX        21     // one screen line
-#define EVENT_TTL_S      300
-#define BUSY_TTL_S       180    // a missed Stop hook must not spin forever
 #define MAX_SESSIONS       8    // bounded roster - a hard cap, not a tuning knob
+// EVENT_TTL_S / BUSY_TTL_S live in config.h with the other timing knobs.
 
 #ifdef DISPLAY_SPI
 // Software SPI: works on any GPIOs with no peripheral setup, and the 1 KB
@@ -237,9 +236,15 @@ int findOrCreateSlot(const String& sid) {
   }
   // Full - eight concurrent sessions is already a lot. Evict whichever has
   // gone longest without a push rather than refuse the newest one.
+  // Compare AGES, not raw timestamps. millis() wraps after ~49 days, and a
+  // straight `a < b` on the stamps either side of that wrap picks the
+  // NEWEST session to evict - the opposite of what is wanted, and the one
+  // timing comparison in this file that was not already wrap-safe. Every
+  // other site here subtracts first for exactly this reason.
+  const unsigned long now = millis();
   int oldest = 0;
   for (int i = 1; i < MAX_SESSIONS; i++) {
-    if (sessions[i].lastPushMs < sessions[oldest].lastPushMs) oldest = i;
+    if ((now - sessions[i].lastPushMs) > (now - sessions[oldest].lastPushMs)) oldest = i;
   }
   sessions[oldest] = Session();
   sessions[oldest].sid  = sid;
@@ -431,17 +436,22 @@ void drawSleepRow(unsigned long sinceMs) {
  * the quota row.
  */
 void drawIdleGraphic() {
-  drawCenter(38, "(-_-)");
-  const unsigned long f = millis() / 300;
+  // Three Z's - always exactly three - drifting up and to the right as they
+  // grow. Staggered by two steps across a six-step cycle, so at any instant
+  // the three are at three different points on the path and none is ever
+  // skipped. The earlier version culled by phase, so it usually showed one or
+  // two, and it sat under a (-_-) face that is gone now: on the idle screen
+  // the Z's alone say it, and the room is better spent on the quota row.
+  //
+  // The path is bounded to y 26..53 on purpose - clear of the quota bar
+  // above (which ends at 25) and of the footer's model line below (which
+  // starts at 56), so neither can ever be overdrawn.
+  const unsigned long t = millis() / 350;
   for (int i = 0; i < 3; i++) {
-    int phase = (int)((f + i * 3) % 9);
-    if (phase > 5) continue;
-    display.setTextSize(1 + phase / 2);
-    int zx = 44 + phase * 10;
-    if (zx <= SCREEN_W - CHAR_W) {
-      display.setCursor(zx, 56 - phase * 6);
-      display.print('Z');
-    }
+    const int phase = (int)((t + i * 2) % 6);
+    display.setTextSize(1 + phase / 2);          // 1,1,2,2,3,3
+    display.setCursor(40 + phase * 11, 46 - phase * 4);
+    display.print('Z');
   }
   display.setTextSize(1);
 }
@@ -494,7 +504,9 @@ void drawScreen(bool force = false) {
       display.drawLine(0, HEAD_RULE_Y, SCREEN_W - 1, HEAD_RULE_Y, SH110X_WHITE);
       drawQuotaRow();
       drawIdleGraphic();
-      display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
+      // No footer rule here, unlike the active screen. There is nothing on
+      // the right of the idle footer to separate the model from, and the
+      // line only boxed in a screen that is meant to read as quiet.
       drawLR(BOTTOM_Y, lastModel, "");
     }
     display.display();
@@ -569,6 +581,12 @@ void applyGauge(JsonVariantConst g, String& label, float& pct) {
 }
 
 void sendStatus() {
+  // Prune before reporting, so a probe can never describe a roster the device
+  // would not actually draw - drawScreen() prunes, but it returns early when
+  // the panel is asleep or absent, and a probe must not depend on whether a
+  // frame happened to be drawn first.
+  pruneSessions();
+
   int usedList[MAX_SESSIONS];
   int n = listUsed(usedList);
 
@@ -594,6 +612,16 @@ void sendStatus() {
     if (slotEventLive(sess)) o["event"] = sess.eventText;
     if (slotBusyLive(sess))  o["busy"]  = sess.busyText;
   }
+
+  // Row 1's state. "alternating" is false whenever no weekly reading has
+  // arrived (pct < 0) - which looks identical on the glass to a broken
+  // rotation, and previously there was no way to tell the two apart without
+  // a camera. "showing" is which of the two is on screen this instant.
+  JsonObject q = doc["quota"].to<JsonObject>();
+  q["5h"]          = q5Pct;
+  q["1w"]          = qwPct;
+  q["alternating"] = (qwPct >= 0);
+  q["showing"]     = (qwPct >= 0 && quotaShowWeek) ? "1w" : "5h";
 
   doc["schema"]        = SCHEMA_VERSION;
   String out;
@@ -648,7 +676,13 @@ void handleLine(const String& line) {
   if (!g3.isNull()) {
     if (!g3["label"].isNull()) qwLabel = field(g3["label"], qwLabel);
     if (!g3["pct"].isNull())   qwPct   = g3["pct"].as<float>();
-    if (!g3["reset"].isNull()) qwReset = field(g3["reset"], qwReset);
+    // The detail belongs to the value it sits beside. An update that carries
+    // a new percentage but no detail must drop the old one rather than pair a
+    // fresh number with a countdown computed for a different reading - that
+    // is how a hardcoded "3d4h" survived long enough to be shown next to a
+    // real weekly percentage.
+    if (!g3["reset"].isNull())      qwReset = field(g3["reset"], qwReset);
+    else if (!g3["pct"].isNull())   qwReset = "";
   }
 
   // A push only touches the roster if it carries something session-scoped -
@@ -675,7 +709,15 @@ void handleLine(const String& line) {
     // Merge, never replace: a hook pushing only "busy" must not wipe this
     // session's gauges, and its statusline pushing only gauges must not clear
     // its busy state.
-    if (!root["title"].isNull()) { s.title = field(root["title"], s.title); lastModel = s.title; }
+    // Clearing THIS session's own title is legitimate. Promoting that empty
+    // string into the account-level fallback is not: lastModel is what the
+    // footer and the Idle screen fall back to when a session has not reported
+    // a model of its own, so blanking it produces exactly the empty corner
+    // that fallback exists to prevent. Only a real name is worth keeping.
+    if (!root["title"].isNull()) {
+      s.title = field(root["title"], s.title);
+      if (s.title.length()) lastModel = s.title;
+    }
     if (!root["session"].isNull()) s.name  = field(root["session"], s.name);
     applyGauge(root["gauge2"], s.g2Label, s.g2Pct);
     if (hasRowRight) s.rowR = field(r["right"], s.rowR);
@@ -732,6 +774,21 @@ void pumpSerial() {
       continue;
     }
 
+    // A '{' can only ever START a line here - every message this protocol
+    // defines is a JSON object, and none contains a raw, unescaped '{' after
+    // the first character (nested objects are reached through a key, so a '{'
+    // inside a well-formed line is always preceded by ':' or ','). So a '{'
+    // arriving when the buffer holds something that is NOT the start of an
+    // object means the buffer is holding a fragment - a partial write, or two
+    // concurrent writers interleaved - and the fragment can be discarded in
+    // favour of the message now starting. Without this, a fragment poisons
+    // every subsequent line until a newline happens along, and if fragments
+    // pile up past LINE_MAX the overflow latch discards good lines too.
+    if (c == '{' && lineBuf.length() && lineBuf[0] != '{') {
+      lineBuf = "";
+      lineOverflow = false;
+    }
+
     if (lineBuf.length() >= LINE_MAX) {
       // Drop the rest of the line rather than growing without bound.
       lineOverflow = true;
@@ -744,7 +801,7 @@ void pumpSerial() {
 
 /** Any reason to redraw faster than the 1 Hz baseline? Read-only - unlike
  *  pickSlotToShow()/drawQuotaRow(), never advances a rotation clock, so
- *  loop() can call it freely without corrupting either 3-second timing. */
+ *  loop() can call it freely without corrupting either rotation clock. */
 bool anyNeedsFastCadence() {
   int used[MAX_SESSIONS];
   int n = listUsed(used);
@@ -758,6 +815,20 @@ bool anyNeedsFastCadence() {
 
 // ── Setup / loop ──────────────────────────────────────────────
 void setup() {
+  // MUST come before begin(). arduino-esp32's USB CDC allocates a 256-byte RX
+  // queue by default ("RX Buffer default has 256 bytes if not preset" -
+  // HWCDC::begin), and begin() only applies that default when no queue has
+  // been preset, so this wins.
+  //
+  // 256 bytes is smaller than a full display push. Measured on real hardware:
+  // lines up to 261 bytes arrived intact, 301 bytes and above were truncated -
+  // and a truncated line has no newline, so it sat in the line buffer and every
+  // subsequent push got appended to it and lost. That is why the display could
+  // go minutes without updating while the host reported every push as written:
+  // the writes genuinely succeeded, the device just could not hold them.
+  //
+  // Sized to LINE_MAX so any line this protocol accepts fits with room spare.
+  Serial.setRxBufferSize(LINE_MAX);
   Serial.begin(115200);
   delay(200);
   pinMode(BOOT_BTN, INPUT_PULLUP);
@@ -786,6 +857,14 @@ void setup() {
 
 void loop() {
   pumpSerial();
+
+  // Session lifecycle runs on its own clock, not as a side effect of drawing.
+  // drawScreen() returns early while the panel is powered down for quiet
+  // hours and does nothing at all on a headless device, so pruning from
+  // inside it meant the roster could sit frozen for hours and a status probe
+  // would report sessions that had long since ended.
+  static unsigned long lastPrune = 0;
+  if (millis() - lastPrune >= 1000UL) { pruneSessions(); lastPrune = millis(); }
 
   // Once powered down there is nothing to animate, so drop back to 1 Hz
   // rather than polling uselessly.

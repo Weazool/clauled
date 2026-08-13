@@ -213,7 +213,7 @@ does not start with `{`.
 ```
 
 ```json
-{"ok":true,"version":"3.8.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"sessions":2,"roster":[{"sid":"a1b2c3d4","name":"clauled-pusher","age":3,"busy":"Running Bash"},{"sid":"e5f6a7b8","name":"other-project","age":47,"event":"Your turn"}],"schema":3}
+{"ok":true,"version":"3.9.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"sessions":2,"roster":[{"sid":"a1b2c3d4","name":"clauled-pusher","age":3,"busy":"Running Bash"},{"sid":"e5f6a7b8","name":"other-project","age":47,"event":"Your turn"}],"quota":{"5h":57,"1w":34,"alternating":true,"showing":"1w"},"schema":3}
 ```
 
 `display_ok` is meaningful only for I2C modules. **SPI has no acknowledgement,
@@ -231,6 +231,12 @@ since its last push), and `event`/`busy` when either is currently live —
 omitted, not sent empty, otherwise. Without this, `"sessions":3` alone gives
 no way to tell a lingering, about-to-be-pruned entry from a genuinely new
 one; with it, a surprising count is a one-line lookup instead of a guess.
+
+`quota` (v3.9.0+) is row 1's state: both readings (`-1` when never received),
+whether it is `alternating`, and which of the two it is `showing` this
+instant. `alternating` is false exactly when no weekly reading has arrived,
+which is the only real reason row 1 ever looks stuck — and on the glass that
+is indistinguishable from a broken rotation, so the device says which.
 
 Use this to confirm a port really is a Clauled device before pushing to it.
 
@@ -261,6 +267,27 @@ time, so this does not matter there; anything that fires several in a row —
 like a test/restore/forget sequence — should pace them with a short delay
 (100–150 ms is comfortably enough) between calls.
 
+## Writing a line safely
+
+Two rules, both learned the hard way — a write that returns success is **not**
+proof the device received the line.
+
+**Start every line with a newline.** The device accumulates bytes until it
+sees one. Anything that leaves an unterminated fragment in its buffer — a
+short write, a retried write, or two concurrent writers interleaving on the
+one port — means your next line is appended to that fragment and lost. A
+leading newline terminates the fragment so your line always starts clean. One
+byte, and it makes each push independent of whether the last one was clean.
+
+**Pace lines longer than ~200 bytes.** Firmware before v3.9.0 has a 256-byte
+USB CDC receive queue (the arduino-esp32 default), which is *smaller than a
+full display push*. Measured on real hardware against v3.8.0: lines up to 261
+bytes arrived intact, lines of 301 bytes and up were truncated — and a
+truncated line has no newline, so it poisons the buffer for everything after
+it. Write long lines in chunks of ~128 bytes with a few milliseconds between
+them. v3.9.0+ presets its buffer to `LINE_MAX` and no longer needs this, but
+pacing costs almost nothing and keeps a host working against older firmware.
+
 ## Semantics that matter
 
 **Everything merges — per session for per-session fields, globally for global
@@ -282,8 +309,9 @@ moving with no pushes at all.
 status row only, when that particular session is the one being shown, so the
 gauges stay readable and other sessions keep rotating normally.
 
-**Busy self-expires** after 3 minutes per session, so a missed `Stop` hook
-cannot leave that one spinning forever. Banners expire after 5 minutes. The
+**Busy self-expires** after `BUSY_TTL_S` (default 90s) per session, so a
+missed `Stop` hook cannot leave that one spinning forever. Banners expire
+after `EVENT_TTL_S` (default 300s). The
 BOOT button clears whichever session is *currently on screen* — not the whole
 roster — so acknowledging one session's banner does not silently dismiss a
 different session's "Your turn" you have not seen yet.
@@ -334,11 +362,13 @@ block, with `five_hour` and `seven_day` each carrying `used_percentage` and
 cache the last reading and carry it forward. The
 `anthropic-ratelimit-unified-5h-*` response headers give the same figures and
 are now only a fallback for hosts that never send the block — a payload's
-`resets_at` matches the header epoch exactly. **That header fallback only
-ever covers the 5h figure** — there is no equivalent header for the weekly
-one, so a cache holding both must be merged into, never wholesale
-overwritten, or a background 5h-only refresh silently destroys a
-previously-cached weekly reading.
+`resets_at` matches the header epoch exactly. **The headers cover BOTH
+figures** — `anthropic-ratelimit-unified-5h-*` and
+`anthropic-ratelimit-unified-7d-*` arrive in the same response, so one
+authenticated call supplies the weekly reading as well as the 5h one. (This
+document previously claimed no weekly header existed. It does; believing
+otherwise left the weekly gauge permanently blank on any setup relying on
+the token path.)
 
 **A reset countdown (`row.left`, `gauge3.reset`) is always formatted as hours
 and minutes, never days** — `"76h23m"`, not `"3d4h"`. Multi-day countdowns
