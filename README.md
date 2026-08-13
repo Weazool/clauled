@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v3.9.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v3.9.1 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -102,7 +102,7 @@ A slot only appears if a push actually carries something session-specific (a mod
 
 **Middle row is the status line**: what Claude is doing (`/ Running Bash`), or when it's your turn, **the header and this row invert** — `Your turn` / `Claude needs input`, the loudest signal the device has, without touching the gauges. BOOT clears whichever session is currently shown, not the whole roster — dismissing one does not silently dismiss a different session's pending banner.
 
-**A session idle 5+ minutes** shows `(-_-)` and how long it's been quiet in its own status row, gauges still visible; past 15 minutes it drops out of the roster. A session that never shows a model or real context at all drops out much sooner — 2 minutes — since a genuine session reliably picks up one of those within its first completed turn. **Once every session has aged out**, the header reads `Idle`, the quota row keeps alternating, three Z's drift up the lower half, and the model stays in the corner — the account quota and the last known model are not really "session data," so they do not disappear along with the roster. **During quiet hours**, idle past `QUIET_IDLE_S` with nothing from *any* session, the panel powers fully off (`SH110X_DISPLAYOFF`) — configure the window on the [clauled-pusher](https://github.com/Weazool/clauled-pusher) side. Any push wakes it instantly; BOOT forces a brief flash.
+**A session idle 5+ minutes** shows `(-_-)` and how long it's been quiet in its own status row, gauges still visible; past 15 minutes it drops out of the roster. A session that never shows a model or real context at all drops out much sooner — 2 minutes — since a genuine session reliably picks up one of those within its first completed turn. **Once every session has aged out**, the screen strips back to three things: the header `Idle`, the quota row still alternating, and three Z's drifting up across everything below it. No context row, no status row, no footer, no model — each of those describes a session, and there isn't one. The account quota stays because it was never session data. **During quiet hours**, idle past `QUIET_IDLE_S` with nothing from *any* session, the panel powers fully off (`SH110X_DISPLAYOFF`) — configure the window on the [clauled-pusher](https://github.com/Weazool/clauled-pusher) side. Any push wakes it instantly; BOOT forces a brief flash.
 
 ## Sending it data
 

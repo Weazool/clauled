@@ -88,19 +88,27 @@ not just the ones currently being rotated. Two sessions needing attention out
 of five total shows `"2/5"` then `"4/5"`, not `"1/2"` then `"2/2"` — the
 number always tells you the true scale.
 
-**Once every session has aged out, the panel does not go blank.** The account
-quota (`gauge1`/`gauge3`) and the last known model survive the roster
-emptying — they were never session data to begin with — so the header reads
-`"Idle"`, row 1 keeps alternating exactly as before, and a graphical idle
-indicator fills the lower half of the screen. Nothing has ever been pushed at
-all shows the original `"Waiting for data"` screen instead — those are two
-different states.
+**Once every session has aged out, the panel does not go blank — but it does
+strip back.** The account quota (`gauge1`/`gauge3`) survives the roster
+emptying; it was never session data. So the idle screen is exactly three
+things: the header `"Idle"`, row 1 still alternating, and a sleep animation
+filling everything below it.
 
-**The model always shows in the footer, even for a session that has not
-reported its own yet.** Hook payloads never carry the model (see Notes), so a
-session whose first-ever push is a hook would otherwise show a blank left
-corner until its own statusline eventually fires. It falls back to the last
-model seen from *any* session rather than show nothing.
+Nothing else is drawn — no context row, no status row, no footer rule, and
+**no model**. Every one of those describes a session, and there is no session
+to describe; a model name left sitting under an empty roster is stating
+something that is no longer true. `title` is still remembered, and reappears
+the moment a session does.
+
+Nothing having ever been pushed at all shows the original `"Waiting for
+data"` screen instead — that is a different state from idle.
+
+**Whenever a session IS on screen, the model always shows in the footer, even
+for one that has not reported its own yet.** Hook payloads never carry the
+model (see Notes), so a session whose first-ever push is a hook would
+otherwise show a blank left corner until its own statusline eventually fires.
+It falls back to the last model seen from *any* session rather than show
+nothing. (The idle screen has no footer at all — see above.)
 
 `{"v":3,"cmd":"status"}` reports the current roster size as `sessions`, and a
 per-slot breakdown as `roster` — see **Status probe** below.

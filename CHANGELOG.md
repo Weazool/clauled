@@ -11,6 +11,19 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.9.1] - 2026-08-14
+
+### Changed
+- **The idle screen strips back to three things**: the header `Idle`, the
+  quota row still alternating, and the sleep animation across everything
+  below it. The model is gone from it — v3.9.0 still drew it bottom-left.
+  A model describes a *session*, and on this screen there is no session to
+  describe, so leaving it there stated something no longer true. It is still
+  remembered and reappears the moment a session does; the active screen is
+  unchanged and still shows every field.
+- The animation reclaims the row the footer occupied, so the three Z's now
+  run the full height from just under the quota bar to the bottom edge.
+
 ## [3.9.0] - 2026-08-13
 
 **Fixes the bug underneath most of the others: the device could not receive a

@@ -443,14 +443,15 @@ void drawIdleGraphic() {
   // two, and it sat under a (-_-) face that is gone now: on the idle screen
   // the Z's alone say it, and the room is better spent on the quota row.
   //
-  // The path is bounded to y 26..53 on purpose - clear of the quota bar
-  // above (which ends at 25) and of the footer's model line below (which
-  // starts at 56), so neither can ever be overdrawn.
+  // The whole area below the quota bar is the animation's - there is no
+  // footer on this screen to keep clear of. The path runs from y=56 at the
+  // bottom-left up to y=31 at the top-right, so the tallest glyph (size 3,
+  // 21px) still lands below the bar, which ends at 25.
   const unsigned long t = millis() / 350;
   for (int i = 0; i < 3; i++) {
     const int phase = (int)((t + i * 2) % 6);
     display.setTextSize(1 + phase / 2);          // 1,1,2,2,3,3
-    display.setCursor(40 + phase * 11, 46 - phase * 4);
+    display.setCursor(38 + phase * 11, 56 - phase * 5);
     display.print('Z');
   }
   display.setTextSize(1);
@@ -500,14 +501,14 @@ void drawScreen(bool force = false) {
       // account quota and the last known model both survive that - they were
       // never session data to begin with - so this is not a blank screen,
       // just an honest "nobody's here right now."
+      // Three things only: the header, the account quota, and the animation.
+      // No footer rule and no model - the model is a property of a SESSION,
+      // and when the roster is empty there is no session for it to describe.
+      // Everything below the quota bar belongs to the animation.
       drawCenter(HEADER_Y, "Idle");
       display.drawLine(0, HEAD_RULE_Y, SCREEN_W - 1, HEAD_RULE_Y, SH110X_WHITE);
       drawQuotaRow();
       drawIdleGraphic();
-      // No footer rule here, unlike the active screen. There is nothing on
-      // the right of the idle footer to separate the model from, and the
-      // line only boxed in a screen that is meant to read as quiet.
-      drawLR(BOTTOM_Y, lastModel, "");
     }
     display.display();
     return;
