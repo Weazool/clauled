@@ -18,7 +18,7 @@ Match on that rather than hardcoding a port, and it survives being moved.
 One JSON object per line, terminated with `\n`:
 
 ```json
-{"v":3,"session":"clauled-pusher","title":"Sonnet 5","quiet":false,"gauge1":{"label":"5h reset","pct":55},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
+{"v":3,"session":"clauled-pusher","title":"Sonnet 5","quiet":false,"gauge1":{"label":"5h lim","pct":55},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
 ```
 
 | Field | Type | Renders as |
@@ -48,7 +48,7 @@ stay under 19 to leave room for the spinner.
 ```
       clauled-pusher                session, centred
 ────────────────────────────────
-5h reset      4h33m        55%      gauge1.label | row.left | gauge1.pct
+5h lim        4h33m        55%      gauge1.label | row.left | gauge1.pct
 ███████████████████░░░░░░░░░░░░░    gauge1.pct
 ctx         357k/1M        45%      gauge2.label | row.right | gauge2.pct
 ███████████████░░░░░░░░░░░░░░░░░    gauge2.pct
@@ -66,16 +66,26 @@ when the percentage widens. It moves only to avoid a collision, always keeping
 one blank character on each side, and is dropped entirely if even that will not
 fit. The label and the percentage are never sacrificed.
 
-Keep labels short. `5h reset` (8 characters) is about the practical limit before
+Keep labels short. `5h lim` (6 characters) is the shipped example - `5h reset`
+(8) is about the practical limit before
 the middle column is pushed off centre on every render.
 
 The status row resolves in priority order:
 
-1. **`events` banner** — inverted block, always wins
+1. **`events` banner** — the WHOLE PANEL inverts while this is live, not just
+   this row — see below. Always wins.
 2. **`busy` spinner** — animates on the device at ~3 Hz
 3. **sleep** — automatic after `STALE_AFTER_S`, not host-driven
 4. **nothing** — a legitimate state: the last turn ended over 5 minutes ago but
    the host is still pushing
+
+**A live `events` banner inverts every line on the screen, not just its own
+row.** `invertDisplay(true)` is a single controller command
+(`SH110X_INVERTDISPLAY`) that flips every pixel's polarity in hardware — it
+does not touch the framebuffer, so the header, both gauges, the bars and the
+footer all come out inverted along with the banner text, for free. Sent once
+on the transition into and out of the state, not on every redraw. This is
+deliberately the loudest signal the device has: the whole screen, not one row.
 
 Above all of that, and independent of it: if `quiet` is `true` and idle exceeds
 `QUIET_IDLE_S` (default 900s / 15 min), the panel is powered off entirely —
@@ -140,7 +150,7 @@ does not start with `{`.
 ```
 
 ```json
-{"ok":true,"version":"3.5.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"schema":3}
+{"ok":true,"version":"3.6.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"schema":3}
 ```
 
 `display_ok` is meaningful only for I2C modules. **SPI has no acknowledgement,

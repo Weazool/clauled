@@ -34,11 +34,11 @@
 //
 //    0- 7   header  session, centred
 //    9      rule
-//   11-18   text    "5h reset"   "4h25m"     "7%"
+//   11-18   text    "5h lim"     "4h25m"     "7%"
 //   20-25   bar     quota                        (6 px)
 //   27-34   text    "ctx"      "357k/1M"    "45%"
 //   36-41   bar     context                      (6 px)
-//   43-53   status  banner / spinner / sleep     (invertible)
+//   43-53   status  banner / spinner / sleep
 //   55      rule
 //   56-63   footer  model                 effort
 #define HEADER_Y       0
@@ -48,9 +48,7 @@
 #define ROW2_Y        27
 #define BAR2_Y        36
 #define BAR_H          6
-#define STATUS_Y      43
-#define STATUS_H      11
-#define STATUS_TEXT_Y 45     // 7-px glyph centred in the 11-px band
+#define STATUS_TEXT_Y 45     // 7-px glyph centred in the status row
 #define RULE_Y        55
 #define BOTTOM_Y      56
 
@@ -90,7 +88,8 @@ bool          quietHours = false;  // host-computed: is it currently the quiet w
 // ── Runtime ───────────────────────────────────────────────────
 unsigned long lastDraw  = 0;
 bool          displayOk = false;
-bool          displayAsleep = false;  // panel powered off for quiet-hours idle
+bool          displayAsleep  = false;  // panel powered off for quiet-hours idle
+bool          displayInverted = false; // whole panel inverted - a banner is live
 String        lineBuf;
 bool          lineOverflow = false;
 
@@ -216,15 +215,6 @@ void drawBar(int y, float pct) {
   }
 }
 
-// Inverted banner: white block, black text. Deliberately the loudest thing on
-// the screen - it is the one state meant to catch your eye across the room.
-void drawBanner(const String& text) {
-  display.fillRect(0, STATUS_Y, SCREEN_W, STATUS_H, SH110X_WHITE);
-  display.setTextColor(SH110X_BLACK);
-  drawCenter(STATUS_TEXT_Y, text);
-  display.setTextColor(SH110X_WHITE);
-}
-
 // Spinner turns on the device, so a long turn keeps moving with no pushes.
 void drawBusy(const String& text) {
   static const char frames[] = {'|', '/', '-', '\\'};
@@ -283,6 +273,20 @@ void drawScreen(bool force = false) {
     displayAsleep = false;
   }
 
+  // A live banner ("Your turn", "Claude needs input") inverts the WHOLE
+  // panel, not just its own row - the loudest possible signal that it is
+  // your move. invertDisplay() is a single controller command (SH110X_
+  // INVERTDISPLAY) that flips every pixel's polarity in hardware; it does
+  // not touch the framebuffer, so everything drawn below - header, gauges,
+  // bars, footer - comes out inverted for free. Toggled only on change, not
+  // resent every redraw, to avoid spamming the command line for up to 5
+  // minutes (EVENT_TTL_S) straight.
+  const bool inverted = eventLive();
+  if (inverted != displayInverted) {
+    display.invertDisplay(inverted);
+    displayInverted = inverted;
+  }
+
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
@@ -312,7 +316,12 @@ void drawScreen(bool force = false) {
   // Status row resolves in priority order: an alert always wins over a
   // spinner, a spinner over sleep. Nothing at all is a legitimate state - it
   // means a turn ended more than EVENT_TTL_S ago but the host is still alive.
-  if      (eventLive()) drawBanner(eventText);
+  //
+  // The banner text draws NORMALLY here (plain white, same as everything
+  // else) - the whole screen is already hardware-inverted above when a banner
+  // is live, so inverting this one row again would cancel out and leave the
+  // text invisible against its own now-white background.
+  if      (eventLive()) drawCenter(STATUS_TEXT_Y, eventText);
   else if (busyLive())  drawBusy(busyText);
   else if (everPushed && dataStale()) drawSleepRow();
 

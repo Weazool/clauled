@@ -11,6 +11,40 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-08-13
+
+When it's your turn, the whole screen inverts - not just the status row.
+
+### Changed
+- **A live `events` banner now inverts every line on the panel**, not just its
+  own row. `invertDisplay(true)` is a single controller command
+  (`SH110X_INVERTDISPLAY`, verified against the actual `Adafruit_GrayOLED.cpp`
+  source rather than assumed) that flips every pixel's polarity in hardware -
+  it never touches the framebuffer, so the header, both gauges, the bars and
+  the footer all come out inverted along with the banner text, for free. Sent
+  once on the transition, not on every redraw, so it does not spam the bus for
+  the up-to-5-minute life of a banner.
+- **`drawBanner()` is gone.** It used to manually paint a white rectangle
+  behind black text for just the status row - the one piece of hand-rolled
+  inversion in the codebase. The banner text now draws exactly like every
+  other row (plain, un-inverted in the framebuffer); the hardware invert
+  handles turning it white-on-black along with everything else. Inverting that
+  row's own drawing a second time on top of a whole-panel invert would have
+  cancelled out and made the text disappear against its own background.
+- Dropped `STATUS_Y` / `STATUS_H`, which existed only for `drawBanner()`'s
+  rectangle and had no other caller once it was removed.
+
+### Notes
+- No protocol change. This is triggered by the same `events` field every
+  pusher already sends - existing pushers get the new behaviour automatically,
+  nothing to update on that side.
+- Verified on real hardware: pushed a `stop` event, then a `notification`
+  event, then cleared each with a `busy` push, confirming the device stays
+  responsive (uptime advancing, status probe answering) across all four
+  invert transitions. Not camera-verified - there is no way to confirm the
+  actual pixels from this environment, only that the command sequence runs
+  without crashing or hanging the device.
+
 ## [3.5.0] - 2026-08-13
 
 Quiet hours. Idle for long enough during a configured overnight window, the

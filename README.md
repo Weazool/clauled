@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v3.5.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v3.6.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -98,7 +98,7 @@ Everything on one screen — no page cycling.
 ```
       clauled-pusher
 ────────────────────────────────
-5h reset      4h33m        55%
+5h lim        4h33m        55%
 ███████████████████░░░░░░░░░░░░░
 ctx         357k/1M        45%
 ███████████████░░░░░░░░░░░░░░░░░
@@ -113,7 +113,7 @@ The header is just the session, centred — its one job is telling you which wor
 
 The middle column is centred on the screen rather than in the gap, so it stays put as the percentage widens from `7%` to `100%`. A value that shifts every time its neighbour changes is harder to read at a glance than one that never moves.
 
-**The middle row is the status line.** While Claude is working it shows what it is doing — `/ Running Bash`, `- Editing main.cpp`, or a gerund like `\ Discombobulating` while it thinks. When Claude wants you, it becomes an inverted banner reading `Your turn` or `Claude needs input`, deliberately the loudest thing on the screen.
+**The middle row is the status line.** While Claude is working it shows what it is doing — `/ Running Bash`, `- Editing main.cpp`, or a gerund like `\ Discombobulating` while it thinks. When Claude wants you, **the entire screen inverts** — every row, not just this one — reading `Your turn` or `Claude needs input`, deliberately the loudest thing the device can do. It's a single hardware command (`invertDisplay`), so the header, both gauges and the footer flip along with the banner text for free.
 
 **When nothing has arrived for five minutes**, the device decides the host is asleep or Claude Code is closed, and the status row shows a `(-_-)` face, how long it has been quiet, and drifting z's. It cannot tell which of the two happened, and does not pretend to. The gauges stay on screen throughout — being away is exactly when you are most likely to glance over casually, and a full-screen sleep animation showed you nothing at all.
 
