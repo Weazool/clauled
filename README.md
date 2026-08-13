@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v3.1.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v3.2.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -95,16 +95,18 @@ If the upload fails to connect with `ClearCommError` or "the device does not rec
 Everything on one screen — no page cycling.
 
 ```
-5h reset 4h33m 55%
+5h reset      4h33m        55%
 ███████████████████░░░░░░░░░░░░░
-ctx 357k/1M 45%
+ctx         357k/1M        45%
 ███████████████░░░░░░░░░░░░░░░░░
 / Running Bash
 ────────────────────────────────
 Opus 5 xhigh              $0.11
 ```
 
-Two gauges: your 5h subscription quota and how full the context window is. Each is one text line — label, its most useful companion number, and the percentage — above a bar. The bottom row carries model, effort and session cost, and never changes shape, so it works as an anchor for the eye.
+Two gauges: your 5h subscription quota and how full the context window is. Each is a three-column line — label flush left, its most useful companion number centred, the percentage flush right — above a bar. The bottom row carries model, effort and session cost, and never changes shape, so it works as an anchor for the eye.
+
+The middle column is centred on the screen rather than in the gap, so it stays put as the percentage widens from `7%` to `100%`. A value that shifts every time its neighbour changes is harder to read at a glance than one that never moves.
 
 The bars are 11 pixels tall. They used to be 6, with a 4-pixel fill, which was hard to read from across a desk; dropping the old top header and the USB indicator paid for the difference.
 
@@ -112,7 +114,7 @@ The bars are 11 pixels tall. They used to be 6, with a 4-pixel fill, which was h
 
 **When nothing has arrived for five minutes**, the device decides the host is asleep or Claude Code is closed, and the status row shows a `(-_-)` face, how long it has been quiet, and drifting z's. It cannot tell which of the two happened, and does not pretend to. The gauges stay on screen throughout — being away is exactly when you are most likely to glance over casually, and a full-screen sleep animation showed you nothing at all.
 
-Both text rows are tight against the 21-character line. If a line will not fit, the device drops the countdown before the percentage — `100%` is one character wider than every other value, and that is precisely when the row most needs to be readable.
+The columns never overlap. If the centred value would touch its neighbour it nudges aside, keeping at least one blank character on each side; if even that will not fit, the middle is dropped and the percentage survives. That is the right way round — the percentage is what you came for.
 
 The spinner and the sleep animation run on device time, so they keep moving with no pushes at all. The BOOT button clears a stuck banner or spinner.
 

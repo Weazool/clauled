@@ -11,6 +11,42 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-08-13
+
+### Changed
+- **The two data rows are now three columns**: label flush left, detail
+  centred, percentage flush right.
+
+  ```
+  5h reset      4h25m         7%
+  ███░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  ctx         357k/1M        45%
+  ██████████████░░░░░░░░░░░░░░░░
+  ```
+
+  Previously all three ran together as one left-aligned string. Separating them
+  gives each a fixed place to look, which is the point of a glanceable display.
+
+  The detail is centred on the **screen**, not on the gap between its
+  neighbours, so it stays put as the percentage widens from `7%` to `100%` — a
+  value that shifts every time the number beside it changes is harder to read at
+  a glance than one that never moves.
+
+  It moves only to avoid a collision, and then it nudges rather than overlaps:
+  there is always at least one blank character on each side. With `5h reset` at
+  48 px, true centring would leave a 1-pixel gap, so the quota row's detail sits
+  5 px right of centre. The context row centres exactly. A guaranteed gap is
+  worth more than pixel-perfect symmetry — 1 px reads as two words touching.
+
+  If even the nudge will not fit, the detail is dropped and the percentage
+  survives. That is the right way round: the percentage is what you came for.
+
+### Notes
+- No pusher change is required. `gauge.label`, the paired `row` side and
+  `gauge.pct` are the same three fields as before; only their placement changed.
+- The 21-character line budget still applies per column rather than to a
+  composed string, so labels have more room than they did in v3.1.0.
+
 ## [3.1.0] - 2026-08-13
 
 A denser screen. Dropping the top header and the USB indicator paid for bars

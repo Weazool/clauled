@@ -138,26 +138,45 @@ void drawLR(int y, const String& l, const String& r) {
   drawRight(y, r);
 }
 
+String pctText(float pct) {
+  return (pct >= 0) ? String((int)(pct + 0.5f)) + "%" : "--";
+}
+
 /**
- * One gauge line: "5h reset 4h33m 55%".
+ * One data row in three columns: label left, detail centred, percentage right.
  *
- * Composed here rather than by the host so the 21-character budget is enforced
- * where the pixels actually are. Degrades in the order that keeps the most
- * useful thing: the percentage always survives, the countdown is dropped first.
- * That matters at 100%, which is one character wider than every other value
- * and is exactly when you most want the row to be readable.
+ * The detail is centred on the SCREEN, not on the gap between its neighbours,
+ * so it stays put as the percentage widens from "7%" to "100%". A value that
+ * shifts every time the number beside it changes is harder to read at a glance
+ * than one that never moves.
+ *
+ * It only moves to avoid a collision, and then it nudges rather than overlaps -
+ * there is always at least one blank character on each side. If even that will
+ * not fit, the detail is dropped: the percentage is the thing you came for.
  */
-String gaugeLine(const String& label, const String& detail, float pct) {
-  String pctStr = (pct >= 0) ? String((int)(pct + 0.5f)) + "%" : "--";
-  String base   = label.length() ? label : "usage";
+void drawRow3(int y, const String& left, const String& mid, const String& right) {
+  String l = left.substring(0, LINE_CHARS);
+  String m = mid.substring(0, LINE_CHARS);
+  String r = right.substring(0, LINE_CHARS);
 
-  String full = base + (detail.length() ? " " + detail : "") + " " + pctStr;
-  if (full.length() <= LINE_CHARS) return full;
+  const int lw = (int)l.length() * CHAR_W;
+  const int mw = (int)m.length() * CHAR_W;
+  const int rw = (int)r.length() * CHAR_W;
 
-  String noDetail = base + " " + pctStr;
-  if (noDetail.length() <= LINE_CHARS) return noDetail;
+  if (l.length()) { display.setCursor(0, y); display.print(l); }
+  if (r.length()) { display.setCursor(SCREEN_W - rw, y); display.print(r); }
+  if (!m.length()) return;
 
-  return full.substring(0, LINE_CHARS);
+  const int minX = lw ? lw + CHAR_W : 0;
+  const int maxX = SCREEN_W - rw - (rw ? CHAR_W : 0) - mw;
+  if (maxX < minX) return;                 // no room between them; drop it
+
+  int x = (SCREEN_W - mw) / 2;
+  if (x < minX) x = minX;
+  if (x > maxX) x = maxX;
+
+  display.setCursor(x, y);
+  display.print(m);
 }
 
 void drawBar(int y, float pct) {
@@ -236,14 +255,12 @@ void drawScreen() {
     return;
   }
 
-  // Each gauge is a text line and a bar. The row detail pairs with its gauge:
-  // rowL is the quota's reset countdown, rowR the context's token counts.
-  display.setCursor(0, ROW1_Y);
-  display.print(gaugeLine(g1Label, rowL, g1Pct));
+  // Each gauge is a three-column line and a bar. The row detail pairs with its
+  // gauge: rowL is the quota's reset countdown, rowR the context's token counts.
+  drawRow3(ROW1_Y, g1Label, rowL, pctText(g1Pct));
   drawBar(BAR1_Y, g1Pct);
 
-  display.setCursor(0, ROW2_Y);
-  display.print(gaugeLine(g2Label, rowR, g2Pct));
+  drawRow3(ROW2_Y, g2Label, rowR, pctText(g2Pct));
   drawBar(BAR2_Y, g2Pct);
 
   // Status row resolves in priority order: an alert always wins over a
