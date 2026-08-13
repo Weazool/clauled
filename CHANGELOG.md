@@ -11,6 +11,43 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-13
+
+Everything on one screen: two gauges, a live activity line, and a sleep
+animation. The protocol moves to labelled display fields, so the host decides
+what each gauge means and new data sources need no firmware change.
+
+### Changed — breaking
+- **Protocol carries labelled fields, not fixed metrics.** `gauge1`, `gauge2`,
+  `row`, `footer`, `title` and `busy` replace the `usage.five_hour` /
+  `seven_day` buckets. Schema version is now `3`.
+- **Page cycling is gone.** Everything renders on a single screen, so
+  `CYCLE_TIME`, `SHOW_WEEKLY_SONNET` and `SHOW_UPTIME` have been removed from
+  `config.h`.
+
+### Added
+- **Two gauges.** The host labels them; the plugin uses them for the 5h
+  subscription quota and context-window occupancy.
+- **Activity line.** The detail row shows what Claude is doing —
+  `/ Running Bash`, `- Editing main.cpp`, or a gerund while it thinks. The
+  spinner animates on device time, so a long turn keeps moving with no pushes.
+- **Sleep animation.** After `STALE_AFTER_S` with no push the device decides the
+  host is asleep or Claude Code is closed and switches to a `(-_-)` face with
+  Z's drifting up and away. It cannot tell which, and does not pretend to.
+- **Attention banners** are inverted — white block, black text — deliberately
+  the loudest thing on the screen.
+- The BOOT button clears a stuck banner or spinner immediately.
+
+### Fixed
+- The busy state self-expires after 3 minutes, so a missed `Stop` hook cannot
+  leave the spinner running forever.
+
+### Notes
+- Detail row priority is banner → spinner → static detail, so an alert always
+  wins over activity.
+- A gauge with `pct` below zero renders `--` with an empty bar. One feed being
+  unavailable never blanks the other.
+
 ## [2.0.0] - 2026-08-13
 
 The device moves to USB serial and drops networking entirely. It now holds no

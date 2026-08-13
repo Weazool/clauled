@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v2.0.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v3.0.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -68,10 +68,7 @@ There is nothing to fill in. `src/config.h` is tracked in git and contains no se
 | `DISPLAY_SPI` | Defined for a 7-pin SPI module; comment out for 4-pin I2C |
 | `OLED_MOSI` / `OLED_CLK` / `OLED_DC` / `OLED_RST` / `OLED_CS` | SPI pins |
 | `SDA_PIN` / `SCL_PIN` / `OLED_ADDR` | I2C pins and address |
-| `CYCLE_TIME` | Seconds per page; `0` for manual (BOOT button) |
-| `SHOW_WEEKLY_SONNET` | Separate Sonnet weekly bucket, for Max plans |
-| `SHOW_UPTIME` | Adds a device-uptime page |
-| `STALE_AFTER_S` | No push for this long → footer marks the data stale |
+| `STALE_AFTER_S` | No push for this long → the device falls asleep (default 300) |
 
 ## Flashing
 
@@ -95,32 +92,41 @@ If the upload fails to connect with `ClearCommError` or "the device does not rec
 
 ## What shows on the screen
 
+Everything on one screen — no page cycling.
+
 ```
-Claude                  1/2
-Current session         16%
-####........................
-       Resets in 1h 21m
-─────────────────────────────
-42s                   USB ok
+Claude                Opus 5 med
+────────────────────────────────
+5h session                  23%
+██████░░░░░░░░░░░░░░░░░░░░░░░░░░
+Context                     74%
+████████████████████░░░░░░░░░░░░
+1h21m                   743k/1M
+────────────────────────────────
+$0.00                    USB ok
 ```
 
-Title left, percent used right, bar underneath, reset countdown centered. The footer shows time since the last push on the left and the USB link state on the right. Pages cycle automatically, or manually with the BOOT button.
+Two gauges: your 5h subscription quota and how full the context window is. The detail row pairs each with its most useful number — the quota reset countdown, and tokens used. The footer shows session cost and whether data is arriving.
 
-Countdowns tick locally between pushes — the device has no wall clock and needs none, because `resets_in` arrives as seconds remaining rather than a timestamp.
+**The detail row is also a status line.** While Claude is working it shows what it is doing — `/ Running Bash`, `- Editing main.cpp`, or a gerund like `\ Discombobulating` while it thinks. When Claude wants you, it becomes an inverted banner reading `Your turn` or `Claude needs input`, which is deliberately the loudest thing on the screen.
+
+**When nothing has arrived for five minutes**, the device decides the host is asleep or Claude Code is closed, and switches to a sleep animation — a `(-_-)` face with Z's drifting up and away. It cannot tell which of the two happened, and does not pretend to.
+
+The spinner and the sleep animation run on device time, so they keep moving with no pushes at all. The BOOT button clears a stuck banner or spinner.
 
 ## Sending it data
 
 Anything that can write to a serial port works. See [API.md](API.md) for the full protocol.
 
 ```bash
-node -e "const{openSync,writeSync,closeSync}=require('fs');const fd=openSync('\\\\\\\\.\\\\COM8','w');writeSync(fd,JSON.stringify({v:1,usage:{five_hour:{pct:23.5,resets_in:4920}}})+'\n');closeSync(fd)"
+node -e "const{openSync,writeSync,closeSync}=require('fs');const fd=openSync('\\\\\\\\.\\\\COM8','w');writeSync(fd,JSON.stringify({v:3,gauge2:{label:'Context',pct:74}})+'\n');closeSync(fd)"
 ```
 
 For normal use, install [clauled-pusher](https://github.com/Weazool/clauled-pusher) — a Claude Code plugin that finds the device automatically and feeds it usage and notifications.
 
 ## Troubleshooting
 
-**Screen stays blank on an I2C module.** Send `{"v":1,"cmd":"status"}` and check `display_ok`. If it is `false` the display did not answer at `0x3C` — confirm VCC is on 3.3V and that SDA (GPIO 4) and SCL (GPIO 5) are not swapped. The device keeps working regardless. On SPI, `display_ok` tells you nothing; check wiring against the SPI table.
+**Screen stays blank on an I2C module.** Send `{"v":3,"cmd":"status"}` and check `display_ok`. If it is `false` the display did not answer at `0x3C` — confirm VCC is on 3.3V and that SDA (GPIO 4) and SCL (GPIO 5) are not swapped. The device keeps working regardless. On SPI, `display_ok` tells you nothing; check wiring against the SPI table.
 
 **Garbage or noise on screen.** Almost always an SSD1306 module rather than an SH1106.
 
@@ -130,7 +136,9 @@ For normal use, install [clauled-pusher](https://github.com/Weazool/clauled-push
 
 **Port is busy.** Only one program can hold a serial port. Close `pio device monitor` or any other terminal before pushing.
 
-**Footer says "stale" or "USB idle".** No push has arrived for `STALE_AFTER_S`. Normal when Claude Code is closed — the pusher only runs while it is open.
+**It went to sleep.** No push has arrived for `STALE_AFTER_S`. Normal when Claude Code is closed or the PC slept — the pusher only runs while Claude Code is open. It wakes on the next push.
+
+**Gauge 1 shows `--`.** The 5h subscription figure needs an authenticated API call, and no token is configured. Everything else works without it — see the [clauled-pusher](https://github.com/Weazool/clauled-pusher) README.
 
 ## License
 

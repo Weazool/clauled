@@ -32,7 +32,5 @@
 #define OLED_ADDR           0x3C
 
 // ── Display behaviour ─────────────────────────────────────────
-#define CYCLE_TIME          5      // seconds per page; 0 = manual (BOOT button)
-#define SHOW_WEEKLY_SONNET  false  // separate Sonnet weekly bucket (Max plans)
-#define SHOW_UPTIME         false  // show a device-uptime page
-#define STALE_AFTER_S       300    // no push for this long -> mark data stale
+// Everything renders on one screen, so there is nothing to cycle through.
+#define STALE_AFTER_S       300   // no push for this long -> mark data stale
