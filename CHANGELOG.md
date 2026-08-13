@@ -11,6 +11,49 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-08-13
+
+The header returns, and the four identity fields each get their own corner.
+
+```
+clauled-pusher          Opus 5
+────────────────────────────────
+5h reset      4h25m         7%
+███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+ctx         357k/1M        45%
+██████████████░░░░░░░░░░░░░░░░░░
+/ Running Bash
+────────────────────────────────
+$0.11                    xhigh
+```
+
+### Added
+- **A header row**: the session on the left, the model on the right.
+- **`session`** — a new top-level string, rendered at the header's left. Where
+  the model says *what* is answering, this says *which work* it is answering
+  about, which matters as soon as more than one session is open.
+- **`footer.right`** — the effort level, spelled out. It has the corner to
+  itself now, so `xhigh` no longer has to be squeezed to `xhi`.
+
+### Changed
+- **`title` is the model alone.** It previously carried model and effort joined,
+  which meant a long model name truncated the effort away entirely. They are
+  separate fields in separate corners, so neither can crowd out the other.
+- **Bars return to 6 pixels**, as they were before v3.1.0. This is the cost of
+  the header coming back: v3.1.0 bought 11-pixel bars by removing it, and that
+  trade is now reversed. Knowing which session the numbers belong to was judged
+  worth more than bar legibility.
+
+### Notes
+- **The schema is unchanged — `v` is still 3.** Both new fields are optional
+  additions, so a pusher older than v3.2.0 still renders correctly: its combined
+  `"Opus 5 xhigh"` simply lands in the header's right, and the footer's right
+  stays empty. Nothing breaks; the effort is just less prominent.
+- `session_name` is the natural source for the header's left, but Claude Code
+  sends it rarely — once in fifty payloads, in the captures behind this. The
+  plugin falls back to the workspace directory name, which is nearly always
+  present and arguably the more useful answer.
+
 ## [3.2.0] - 2026-08-13
 
 ### Changed

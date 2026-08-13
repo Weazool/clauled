@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v3.2.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v3.3.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -95,20 +95,22 @@ If the upload fails to connect with `ClearCommError` or "the device does not rec
 Everything on one screen — no page cycling.
 
 ```
+clauled-pusher          Opus 5
+────────────────────────────────
 5h reset      4h33m        55%
 ███████████████████░░░░░░░░░░░░░
 ctx         357k/1M        45%
 ███████████████░░░░░░░░░░░░░░░░░
 / Running Bash
 ────────────────────────────────
-Opus 5 xhigh              $0.11
+$0.11                    xhigh
 ```
 
-Two gauges: your 5h subscription quota and how full the context window is. Each is a three-column line — label flush left, its most useful companion number centred, the percentage flush right — above a bar. The bottom row carries model, effort and session cost, and never changes shape, so it works as an anchor for the eye.
+Two gauges: your 5h subscription quota and how full the context window is. Each is a three-column line — label flush left, its most useful companion number centred, the percentage flush right — above a bar.
+
+The four identity fields each get a corner: the session top-left, the model top-right, the session cost bottom-left, the effort bottom-right. Splitting them means a long model name can no longer crowd the effort out, which is what happened when the two shared a single string.
 
 The middle column is centred on the screen rather than in the gap, so it stays put as the percentage widens from `7%` to `100%`. A value that shifts every time its neighbour changes is harder to read at a glance than one that never moves.
-
-The bars are 11 pixels tall. They used to be 6, with a 4-pixel fill, which was hard to read from across a desk; dropping the old top header and the USB indicator paid for the difference.
 
 **The middle row is the status line.** While Claude is working it shows what it is doing — `/ Running Bash`, `- Editing main.cpp`, or a gerund like `\ Discombobulating` while it thinks. When Claude wants you, it becomes an inverted banner reading `Your turn` or `Claude needs input`, deliberately the loudest thing on the screen.
 

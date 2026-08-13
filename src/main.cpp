@@ -30,22 +30,24 @@
 #define LINE_CHARS 21     // 128 / 6
 
 // ── Layout ────────────────────────────────────────────────────
-// All 64 rows are budgeted. Dropping the top header and the USB indicator
-// bought the bars nearly double their old height, which is the whole point:
-// a 6-pixel bar with a 4-pixel fill is hard to read from across a desk.
+// All 64 rows are budgeted.
 //
-//    0- 7   text    "5h reset 4h33m 55%"
-//    9-19   bar     quota                        (11 px, was 6)
-//   21-28   text    "ctx 357k/1M 45%"
-//   30-40   bar     context                      (11 px, was 6)
+//    0- 7   header  session               model
+//    9      rule
+//   11-18   text    "5h reset"   "4h25m"     "7%"
+//   20-25   bar     quota                        (6 px)
+//   27-34   text    "ctx"      "357k/1M"    "45%"
+//   36-41   bar     context                      (6 px)
 //   43-53   status  banner / spinner / sleep     (invertible)
 //   55      rule
-//   56-63   text    "Opus 5 xhigh"      "256.6$"
-#define ROW1_Y         0
-#define BAR1_Y         9
-#define ROW2_Y        21
-#define BAR2_Y        30
-#define BAR_H         11
+//   56-63   footer  cost                  effort
+#define HEADER_Y       0
+#define HEAD_RULE_Y    9
+#define ROW1_Y        11
+#define BAR1_Y        20
+#define ROW2_Y        27
+#define BAR2_Y        36
+#define BAR_H          6
 #define STATUS_Y      43
 #define STATUS_H      11
 #define STATUS_TEXT_Y 45     // 7-px glyph centred in the 11-px band
@@ -73,7 +75,8 @@ String  title = "";
 String  g1Label = "", g2Label = "";
 float   g1Pct = -1, g2Pct = -1;
 String  rowL = "", rowR = "";
-String  footerL = "";
+String  footerL = "", footerR = "";
+String  session = "";
 
 String        busyText = "";
 unsigned long busyAt   = 0;
@@ -255,6 +258,12 @@ void drawScreen() {
     return;
   }
 
+  // Header: which session on the left, which model on the right. The session
+  // is truncated to whatever the model leaves free, never the other way round -
+  // the model is short and fixed, the session name is neither.
+  drawLR(HEADER_Y, session, title);
+  display.drawLine(0, HEAD_RULE_Y, SCREEN_W - 1, HEAD_RULE_Y, SH110X_WHITE);
+
   // Each gauge is a three-column line and a bar. The row detail pairs with its
   // gauge: rowL is the quota's reset countdown, rowR the context's token counts.
   drawRow3(ROW1_Y, g1Label, rowL, pctText(g1Pct));
@@ -272,11 +281,10 @@ void drawScreen() {
 
   display.drawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, SH110X_WHITE);
 
-  // The bottom row never changes shape, so it works as an anchor for the eye.
-  // The USB indicator that used to sit here is gone: it could never tell
-  // "Claude Code closed" from "cable unplugged", and the status row above
-  // already says whether anything is happening.
-  drawLR(BOTTOM_Y, title, footerL);
+  // Cost left, effort right. The USB indicator that used to sit here is gone:
+  // it could never tell "Claude Code closed" from "cable unplugged", and the
+  // status row above already says whether anything is happening.
+  drawLR(BOTTOM_Y, footerL, footerR);
 
   display.display();
 }
@@ -324,7 +332,8 @@ void handleLine(const String& line) {
 
   // Merge, never replace: a hook pushing only "busy" must not wipe the gauges,
   // and the statusline pushing only gauges must not clear the busy state.
-  if (!root["title"].isNull()) title = field(root["title"], title);
+  if (!root["title"].isNull())   title   = field(root["title"], title);
+  if (!root["session"].isNull()) session = field(root["session"], session);
   applyGauge(root["gauge1"], g1Label, g1Pct);
   applyGauge(root["gauge2"], g2Label, g2Pct);
 
@@ -335,7 +344,10 @@ void handleLine(const String& line) {
   }
 
   JsonVariantConst f = root["footer"];
-  if (!f.isNull()) footerL = field(f["left"], footerL);
+  if (!f.isNull()) {
+    footerL = field(f["left"],  footerL);
+    footerR = field(f["right"], footerR);
+  }
 
   // An empty string clears the spinner - that is how Stop ends a turn.
   if (!root["busy"].isNull()) {
