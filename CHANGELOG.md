@@ -11,6 +11,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-08-13
+
+### Fixed
+- **A banner masked the spinner for its full lifetime.** Events cleared `busy`,
+  but `busy` did not clear events, so a `Your turn` banner held the detail row
+  for its entire 5-minute TTL while every spinner push landed invisibly beneath
+  it. The display looked frozen mid-task even though hooks were firing normally.
+  Going busy now clears any banner: if Claude is working, it is not your turn.
+
 ## [3.0.0] - 2026-08-13
 
 Everything on one screen: two gauges, a live activity line, and a sleep

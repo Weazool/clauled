@@ -277,6 +277,10 @@ void handleLine(const String& line) {
   if (!root["busy"].isNull()) {
     busyText = field(root["busy"], "");
     busyAt   = millis();
+    // Going busy also clears any banner: if Claude is working, it is not your
+    // turn. Without this a "Your turn" banner outranks every spinner beneath it
+    // for its full TTL, and the display looks frozen mid-task.
+    if (busyText.length()) eventText = "";
   }
 
   JsonArrayConst evs = root["events"];

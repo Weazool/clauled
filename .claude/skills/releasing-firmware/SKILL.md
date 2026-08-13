@@ -200,6 +200,41 @@ gh release view "vX.Y.Z" --repo Weazool/clauled --json assets -q '.assets[].name
 
 Empty output confirms a notes-only release with no binary attached.
 
+### 10. Refresh the marketplace clone (plugin releases only)
+
+**Pushing a plugin release does not make it visible to Claude Code.** The app
+resolves updates against a git clone on disk, not against GitHub — so the new
+version is offered only after that clone is refreshed. Skipping this produces a
+release that exists on GitHub while the UI insists there is no update:
+
+```bash
+git -C ~/.claude/plugins/marketplaces/weazool-clauled pull --ff-only
+```
+
+Then confirm the clone advertises the new version:
+
+```bash
+node -e "console.log(JSON.parse(require('fs').readFileSync(process.env.USERPROFILE+'/.claude/plugins/marketplaces/weazool-clauled/.claude-plugin/plugin.json','utf8')).version)"
+```
+
+Note there are **two copies of a plugin on disk** and they serve different
+purposes:
+
+| Copy | Path | Used for |
+|---|---|---|
+| marketplace clone | `plugins/marketplaces/<name>/` | update discovery, and any path referenced directly from `settings.json` |
+| installed cache | `plugins/cache/<market>/<plugin>/<version>/` | **hooks load from here** |
+
+Editing the clone does not change what hooks run. After updating, verify the
+registry actually moved:
+
+```bash
+node -e "const j=require(process.env.USERPROFILE+'/.claude/plugins/installed_plugins.json');console.log(JSON.stringify(j.plugins,null,1))"
+```
+
+Hooks are registered at **app startup**, so a plugin update needs a restart of
+Claude Code — not merely a new chat.
+
 ## Common Mistakes
 
 | Mistake | Fix |
