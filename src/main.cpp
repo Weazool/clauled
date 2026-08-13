@@ -50,6 +50,8 @@
 #define ROW2_Y        27
 #define BAR2_Y        36
 #define BAR_H          6
+#define STATUS_ROW_Y  43     // top of the status row - fill bound for the attention invert
+#define STATUS_ROW_H  11     // 43-53, matches the layout comment above
 #define STATUS_TEXT_Y 45     // 7-px glyph centred in the status row
 #define RULE_Y        55
 #define BOTTOM_Y      56
@@ -114,6 +116,7 @@ struct Session {
   unsigned long eventAt   = 0;
 
   unsigned long lastPushMs = 0;
+  bool          everPopulated = false;  // has this slot ever shown a title or real context?
 };
 
 Session sessions[MAX_SESSIONS];
@@ -129,7 +132,6 @@ unsigned long lastRotateMs  = 0;
 unsigned long lastDraw  = 0;
 bool          displayOk = false;
 bool          displayAsleep  = false;  // panel powered off for quiet-hours idle
-bool          displayInverted = false; // whole panel inverted - a banner is live
 String        lineBuf;
 bool          lineOverflow = false;
 
@@ -193,10 +195,22 @@ void logf(const char* fmt, ...) {
 
 // ── Session roster ────────────────────────────────────────────
 
-/** A session with no push in SESSION_GONE_S is assumed closed - dropped. */
+/**
+ * A session with no push in SESSION_GONE_S is assumed closed - dropped.
+ * A slot that has NEVER been confirmed (no title, no real context - see
+ * Session::everPopulated) gets only UNCONFIRMED_GONE_S, much shorter: a
+ * genuine session reliably picks up at least one of those within its first
+ * completed turn, so a slot that still has neither after a couple of minutes
+ * is far more likely a stray or malformed push than a session just being slow
+ * to report - not worth holding onto for the full grace period.
+ */
 void pruneSessions() {
   for (int i = 0; i < MAX_SESSIONS; i++) {
-    if (sessions[i].used && ((millis() - sessions[i].lastPushMs) / 1000UL) > (unsigned long)SESSION_GONE_S) {
+    if (!sessions[i].used) continue;
+    unsigned long limit = sessions[i].everPopulated
+      ? (unsigned long)SESSION_GONE_S
+      : (unsigned long)UNCONFIRMED_GONE_S;
+    if (((millis() - sessions[i].lastPushMs) / 1000UL) > limit) {
       sessions[i] = Session();
     }
   }
@@ -234,48 +248,26 @@ int findOrCreateSlot(const String& sid) {
 }
 
 /**
- * Which slots belong to the group that should be shown right now, and how
- * many. Attention beats working beats idle - the same "alert always wins"
- * rule a single session already had, now deciding which SESSIONS get shown,
- * not only what one session's status row displays.
- */
-int groupMembers(int* out) {
-  int used[MAX_SESSIONS];
-  int n = listUsed(used);
-
-  int m = 0;
-  for (int i = 0; i < n; i++) if (slotEventLive(sessions[used[i]])) out[m++] = used[i];
-  if (m) return m;
-
-  for (int i = 0; i < n; i++) if (slotBusyLive(sessions[used[i]])) out[m++] = used[i];
-  if (m) return m;
-
-  for (int i = 0; i < n; i++) out[m++] = used[i];   // idle - everyone left
-  return m;
-}
-
-/**
- * Pick which slot to show, advancing rotation on its own 3-second clock.
+ * Pick which slot to show, advancing rotation on its own clock.
  *
- * If the currently-shown slot is no longer in the active group - it was
- * promoted into attention, demoted out of it, or pruned entirely - snap to
- * the front of the new group immediately rather than waiting for the next
- * tick. Otherwise advance one step every ROTATE_INTERVAL_S, wrapping around.
- *
- * Entirely independent of the quota row's own 5h/1w alternation below - two
- * separate rotations, two separate clocks, because they rotate two
- * unrelated things (which session; which account metric).
+ * Every active session gets equal time, in roster order, regardless of
+ * whether it needs attention, is merely working, or is idle - deliberately
+ * flat. An earlier version prioritised attention over working over idle, but
+ * that let a single stuck banner monopolise the screen for as long as it
+ * stayed stuck, hiding every other session in the meantime. Cycling through
+ * everyone means you always see the rest too; the status row for whichever
+ * slot is showing still tells you its own state.
  */
 int pickSlotToShow() {
-  int group[MAX_SESSIONS];
-  int m = groupMembers(group);
+  int used[MAX_SESSIONS];
+  int m = listUsed(used);
   if (m == 0) return -1;
 
   int pos = -1;
-  for (int i = 0; i < m; i++) if (group[i] == lastShownSlot) { pos = i; break; }
+  for (int i = 0; i < m; i++) if (used[i] == lastShownSlot) { pos = i; break; }
 
   if (pos < 0) {
-    lastShownSlot = group[0];
+    lastShownSlot = used[0];
     lastRotateMs  = millis();
     return lastShownSlot;
   }
@@ -284,7 +276,7 @@ int pickSlotToShow() {
     pos = (pos + 1) % m;
     lastRotateMs = millis();
   }
-  lastShownSlot = group[pos];
+  lastShownSlot = used[pos];
   return lastShownSlot;
 }
 
@@ -482,9 +474,6 @@ void drawScreen(bool force = false) {
   int m = listUsed(usedList);
 
   if (m == 0) {
-    const bool inverted = false;
-    if (inverted != displayInverted) { display.invertDisplay(inverted); displayInverted = inverted; }
-
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SH110X_WHITE);
@@ -514,18 +503,7 @@ void drawScreen(bool force = false) {
 
   int shownIdx = pickSlotToShow();
   Session& s = sessions[shownIdx];
-
-  // A live banner on the session BEING SHOWN inverts the WHOLE panel, not
-  // just its own row - the loudest possible signal that it is your move.
-  // invertDisplay() is a single controller command (SH110X_INVERTDISPLAY)
-  // that flips every pixel's polarity in hardware; it does not touch the
-  // framebuffer, so everything drawn below comes out inverted for free.
-  // Toggled only on change, not resent every redraw.
-  const bool inverted = slotEventLive(s);
-  if (inverted != displayInverted) {
-    display.invertDisplay(inverted);
-    displayInverted = inverted;
-  }
+  const bool attn = slotEventLive(s);
 
   display.clearDisplay();
   display.setTextSize(1);
@@ -534,7 +512,17 @@ void drawScreen(bool force = false) {
   // Header: session name left, position among ALL active sessions right -
   // "2/5" even while only cycling the subset that needs attention, so the
   // number tells you the true scale, not just how big today's rotation is.
+  //
+  // A live banner inverts the header - white fill, black text, in software -
+  // together with the status row below. v3.6.0 used the panel-wide
+  // invertDisplay() command instead, which flipped every pixel including the
+  // gauges; this confines "it's your move" to the two rows actually about it.
+  if (attn) {
+    display.fillRect(0, HEADER_Y, SCREEN_W, HEAD_RULE_Y - HEADER_Y, SH110X_WHITE);
+    display.setTextColor(SH110X_BLACK);
+  }
   drawLR(HEADER_Y, s.name, positionLabel(shownIdx));
+  if (attn) display.setTextColor(SH110X_WHITE);
   display.drawLine(0, HEAD_RULE_Y, SCREEN_W - 1, HEAD_RULE_Y, SH110X_WHITE);
 
   drawQuotaRow();   // account-level - same content regardless of which session this is
@@ -545,11 +533,12 @@ void drawScreen(bool force = false) {
   // Status row resolves in priority order: an alert always wins over a
   // spinner, a spinner over sleep. Nothing at all is a legitimate state - it
   // means a turn ended more than EVENT_TTL_S ago but the host is still alive.
-  //
-  // The banner text draws NORMALLY here (plain white) - the whole screen is
-  // already hardware-inverted above when a banner is live, so inverting this
-  // one row again would cancel out and leave the text invisible.
-  if      (slotEventLive(s)) drawCenter(STATUS_TEXT_Y, s.eventText);
+  if (attn) {
+    display.fillRect(0, STATUS_ROW_Y, SCREEN_W, STATUS_ROW_H, SH110X_WHITE);
+    display.setTextColor(SH110X_BLACK);
+    drawCenter(STATUS_TEXT_Y, s.eventText);
+    display.setTextColor(SH110X_WHITE);
+  }
   else if (slotBusyLive(s))  drawBusy(s.busyText);
   else if (slotStale(s))     drawSleepRow(s.lastPushMs);
 
@@ -581,6 +570,8 @@ void applyGauge(JsonVariantConst g, String& label, float& pct) {
 
 void sendStatus() {
   int usedList[MAX_SESSIONS];
+  int n = listUsed(usedList);
+
   JsonDocument doc;
   doc["ok"]            = true;
   doc["version"]       = CLAULED_VERSION;
@@ -588,7 +579,22 @@ void sendStatus() {
   doc["uptime"]        = millis() / 1000;
   doc["last_push_age"] = everAnyPushed ? (long)((millis() - lastAnyPushMs) / 1000UL) : -1;
   doc["quiet_sleep"]   = displayAsleep;
-  doc["sessions"]      = listUsed(usedList);
+  doc["sessions"]      = n;
+
+  // Per-session breakdown, not just the count - a bare number gives no way to
+  // tell a lingering, about-to-be-pruned entry from a genuinely new session.
+  // Bounded by MAX_SESSIONS, so this can never grow unbounded.
+  JsonArray roster = doc["roster"].to<JsonArray>();
+  for (int i = 0; i < n; i++) {
+    Session& sess = sessions[usedList[i]];
+    JsonObject o = roster.add<JsonObject>();
+    o["sid"]  = sess.sid;
+    o["name"] = sess.name;
+    o["age"]  = (long)((millis() - sess.lastPushMs) / 1000UL);
+    if (slotEventLive(sess)) o["event"] = sess.eventText;
+    if (slotBusyLive(sess))  o["busy"]  = sess.busyText;
+  }
+
   doc["schema"]        = SCHEMA_VERSION;
   String out;
   serializeJson(doc, out);
@@ -608,6 +614,19 @@ void handleLine(const String& line) {
 
   const char* cmd = root["cmd"] | "";
   if (strcmp(cmd, "status") == 0) { sendStatus(); return; }
+
+  // Immediate removal of one session, by sid - used by doctor.mjs so its own
+  // test push does not otherwise linger in the roster for SESSION_GONE_S
+  // (15 min) after every single run.
+  if (strcmp(cmd, "forget") == 0) {
+    String forgetSid = field(root["sid"], "");
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+      if (sessions[i].used && sessions[i].sid == forgetSid) { sessions[i] = Session(); break; }
+    }
+    reply("{\"ok\":true}");
+    drawScreen();
+    return;
+  }
 
   // quiet is global, not per-session - a property of wall-clock time, the
   // same regardless of which session's push happened to carry it. Unlike
@@ -632,51 +651,69 @@ void handleLine(const String& line) {
     if (!g3["reset"].isNull()) qwReset = field(g3["reset"], qwReset);
   }
 
-  // No sid at all is not an error - it is the pre-multi-session contract,
-  // and it still works: everything with no sid shares the one "" slot, which
-  // is exactly the old single-session behaviour, M pinned at 1.
-  String sid = field(root["sid"], "");
-  int idx = findOrCreateSlot(sid);
-  Session& s = sessions[idx];
-
-  // Merge, never replace: a hook pushing only "busy" must not wipe this
-  // session's gauges, and its statusline pushing only gauges must not clear
-  // its busy state.
-  if (!root["title"].isNull()) { s.title = field(root["title"], s.title); lastModel = s.title; }
-  if (!root["session"].isNull()) s.name  = field(root["session"], s.name);
-  applyGauge(root["gauge2"], s.g2Label, s.g2Pct);
-
+  // A push only touches the roster if it carries something session-scoped -
+  // title, session name, context, activity, or an alert. A push with NONE of
+  // that - pure account-level data, e.g. a correction to gauge1/gauge3/quiet
+  // alone - updates those globals and stops there. Without this guard, even
+  // a globals-only push still called findOrCreateSlot() and touched a slot
+  // (the shared "" one, most often, since a globals-only push usually has no
+  // reason to carry a sid either) for a "session" that was never actually
+  // there - a phantom entry with nothing in it, which pruning alone cannot
+  // prevent since the slot is freshly touched every time it happens again.
   JsonVariantConst r = root["row"];
-  if (!r.isNull()) {
-    if (!r["left"].isNull()) q5Reset = field(r["left"], q5Reset);
-    s.rowR = field(r["right"], s.rowR);
-  }
+  bool hasRowRight = !r.isNull() && !r["right"].isNull();
+  bool touchesSession =
+    !root["title"].isNull() || !root["session"].isNull() || !root["gauge2"].isNull() ||
+    !root["busy"].isNull()  || !root["events"].isNull()   || hasRowRight ||
+    (!root["footer"].isNull() && !root["footer"]["right"].isNull());
 
-  // footer.left is not read - it used to carry cost, which is gone. A pusher
-  // still sending it does no harm; the value is simply never drawn.
-  JsonVariantConst f = root["footer"];
-  if (!f.isNull() && !f["right"].isNull()) s.effort = field(f["right"], s.effort);
+  if (touchesSession) {
+    String sid = field(root["sid"], "");
+    int idx = findOrCreateSlot(sid);
+    Session& s = sessions[idx];
 
-  // An empty string clears this session's spinner - that is how Stop ends a turn.
-  if (!root["busy"].isNull()) {
-    s.busyText = field(root["busy"], "");
-    s.busyAt   = millis();
-    // Going busy also clears this session's own banner: if it is working, it
-    // is not your turn on THAT one. Without this a "Your turn" banner
-    // outranks every spinner beneath it for its full TTL.
-    if (s.busyText.length()) s.eventText = "";
-  }
+    // Merge, never replace: a hook pushing only "busy" must not wipe this
+    // session's gauges, and its statusline pushing only gauges must not clear
+    // its busy state.
+    if (!root["title"].isNull()) { s.title = field(root["title"], s.title); lastModel = s.title; }
+    if (!root["session"].isNull()) s.name  = field(root["session"], s.name);
+    applyGauge(root["gauge2"], s.g2Label, s.g2Pct);
+    if (hasRowRight) s.rowR = field(r["right"], s.rowR);
 
-  JsonArrayConst evs = root["events"];
-  if (!evs.isNull()) {
-    for (JsonObjectConst e : evs) {
-      s.eventText = String((const char*)(e["text"] | "")).substring(0, FIELD_MAX);
-      s.eventAt   = millis();
-      if (s.eventText.length()) s.busyText = "";   // an alert supersedes the spinner
+    // A slot counts as "confirmed" once it has shown a title or real context -
+    // substance, not just activity - see UNCONFIRMED_GONE_S in pruneSessions().
+    if (s.title.length() || s.g2Pct >= 0) s.everPopulated = true;
+
+    // footer.left is not read - it used to carry cost, which is gone. A pusher
+    // still sending it does no harm; the value is simply never drawn.
+    JsonVariantConst f = root["footer"];
+    if (!f.isNull() && !f["right"].isNull()) s.effort = field(f["right"], s.effort);
+
+    // An empty string clears this session's spinner - that is how Stop ends a turn.
+    if (!root["busy"].isNull()) {
+      s.busyText = field(root["busy"], "");
+      s.busyAt   = millis();
+      // Going busy also clears this session's own banner: if it is working, it
+      // is not your turn on THAT one. Without this a "Your turn" banner
+      // outranks every spinner beneath it for its full TTL.
+      if (s.busyText.length()) s.eventText = "";
     }
+
+    JsonArrayConst evs = root["events"];
+    if (!evs.isNull()) {
+      for (JsonObjectConst e : evs) {
+        s.eventText = String((const char*)(e["text"] | "")).substring(0, FIELD_MAX);
+        s.eventAt   = millis();
+        if (s.eventText.length()) s.busyText = "";   // an alert supersedes the spinner
+      }
+    }
+
+    s.lastPushMs = millis();
   }
 
-  s.lastPushMs  = millis();
+  // row.left (the 5h reset detail) is global regardless of touchesSession.
+  if (!r.isNull() && !r["left"].isNull()) q5Reset = field(r["left"], q5Reset);
+
   lastAnyPushMs = millis();
   everAnyPushed = true;
 

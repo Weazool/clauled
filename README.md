@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v3.7.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v3.8.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -62,7 +62,8 @@ All pins configurable in `src/config.h`. Safe GPIOs: 0, 1, 3, 4, 5, 6, 7, 10 —
 | `SDA_PIN` / `SCL_PIN` / `OLED_ADDR` | I2C pins and address |
 | `STALE_AFTER_S` | No push for a session this long → shows it as quiet (default 300) |
 | `SESSION_GONE_S` | No push for a session this long → drops it from the roster (default 900) |
-| `ROTATE_INTERVAL_S` | Multiple sessions active → cycle this often (default 3) |
+| `UNCONFIRMED_GONE_S` | No title/context EVER shown for a session this long → drops it much sooner (default 120) |
+| `ROTATE_INTERVAL_S` | Multiple sessions active → cycle this often, also the 5h/1w alternation rate (default 6) |
 | `QUIET_IDLE_S` | No push from ANY session this long **during quiet hours** → panel powers off (default 900) |
 
 ## Flashing
@@ -91,13 +92,15 @@ Sonnet 5                 xhigh
 
 Two gauges — account quota, context window — each a three-column line (label, centred detail, percentage) above a bar. Header is the session on the left, `N/M` on the right. Footer is model left, effort right.
 
-**The device tracks up to 8 Claude Code sessions at once** and decides on its own which to show — no host coordination needed beyond tagging each push with which session it came from. Priority: any session needing your attention beats any session merely working beats everything else, and it cycles every 3 seconds within whichever group is active. `N/M` is your position among *every* active session, not just the ones being cycled — two sessions needing attention out of five shows `2/5` then `4/5`, never resetting to a smaller-looking `1/2`.
+**The device tracks up to 8 Claude Code sessions at once** and decides on its own which to show — no host coordination needed beyond tagging each push with which session it came from. It cycles through every active session in turn, every 6 seconds, regardless of whether it needs your attention, is working, or is idle — an earlier version prioritised attention first, but that let one stuck banner monopolise the screen for as long as it stayed stuck. `N/M` is your position among *every* active session — two sessions needing attention out of five shows `2/5` then `4/5`, never resetting to a smaller-looking `1/2`.
 
-**Row 1 alternates too** — the 5h quota and the weekly (7-day, all models) quota trade places in the same slot every few seconds, entirely independent of which session is on screen, since the quota belongs to your account, not to any one session.
+A slot only appears if a push actually carries something session-specific (a model, a session name, context, activity, or an alert) — a push that only corrects the account quota, say, never creates a phantom entry for it.
 
-**Middle row is the status line**: what Claude is doing (`/ Running Bash`), or when it's your turn, **the whole screen inverts** — `Your turn` / `Claude needs input`, the loudest signal the device has. BOOT clears whichever session is currently shown, not the whole roster — dismissing one does not silently dismiss a different session's pending banner.
+**Row 1 alternates too, on the same 6-second clock** — the 5h quota and the weekly (7-day, all models) quota trade places in the same slot, entirely independent of which session is on screen, since the quota belongs to your account, not to any one session.
 
-**A session idle 5+ minutes** shows `(-_-)` and how long it's been quiet in its own status row, gauges still visible; past 15 minutes it drops out of the roster. **Once every session has aged out**, the header reads `Idle`, the quota row keeps alternating, and a bigger idle graphic fills the lower half — the account quota and the last known model are not really "session data," so they do not disappear along with the roster. **During quiet hours**, idle past `QUIET_IDLE_S` with nothing from *any* session, the panel powers fully off (`SH110X_DISPLAYOFF`) — configure the window on the [clauled-pusher](https://github.com/Weazool/clauled-pusher) side. Any push wakes it instantly; BOOT forces a brief flash.
+**Middle row is the status line**: what Claude is doing (`/ Running Bash`), or when it's your turn, **the header and this row invert** — `Your turn` / `Claude needs input`, the loudest signal the device has, without touching the gauges. BOOT clears whichever session is currently shown, not the whole roster — dismissing one does not silently dismiss a different session's pending banner.
+
+**A session idle 5+ minutes** shows `(-_-)` and how long it's been quiet in its own status row, gauges still visible; past 15 minutes it drops out of the roster. A session that never shows a model or real context at all drops out much sooner — 2 minutes — since a genuine session reliably picks up one of those within its first completed turn. **Once every session has aged out**, the header reads `Idle`, the quota row keeps alternating, and a bigger idle graphic fills the lower half — the account quota and the last known model are not really "session data," so they do not disappear along with the roster. **During quiet hours**, idle past `QUIET_IDLE_S` with nothing from *any* session, the panel powers fully off (`SH110X_DISPLAYOFF`) — configure the window on the [clauled-pusher](https://github.com/Weazool/clauled-pusher) side. Any push wakes it instantly; BOOT forces a brief flash.
 
 ## Sending it data
 
@@ -127,7 +130,7 @@ node -e "const{openSync,writeSync,closeSync}=require('fs');const fd=openSync('\\
 
 **Header shows `Idle` instead of a session.** Every session has been quiet for 15+ minutes and dropped from the roster — normal once Claude Code closes or a session goes untouched that long. Check `sessions` on the status probe; any new push brings it back.
 
-**Wrong session shown, or it won't stop rotating.** Check `sessions` on the status probe — if it is higher than you expect, an old session has not aged out yet (up to 15 minutes), or several genuinely have something happening at once. It always shows the highest-priority group (attention, then working, then idle) and rotates within it every 3s; a single active session never rotates.
+**Wrong session shown, or it won't stop rotating.** Check `roster` on the status probe, not just `sessions` — it lists each slot's `sid`, name and age, so a surprising count is a one-line lookup instead of a guess. Rotation is flat: every active session gets equal time, every 6s, regardless of its state; a single active session never rotates.
 
 ## License
 

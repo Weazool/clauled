@@ -11,6 +11,74 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-08-13
+
+Four fixes and a rotation-policy change, all found and verified against the
+real multi-session roster introduced in v3.7.0.
+
+### Changed
+- **A live banner inverts only the header and the status row**, not the
+  whole panel. `invertDisplay()` (the hardware command used since v3.6.0)
+  flipped every pixel including both gauges; this confines "it's your move"
+  to the two rows actually about it, drawn in software (a filled rectangle
+  behind inverse-colour text) so the gauges stay in their normal colours.
+- **Session rotation is flat, every `ROTATE_INTERVAL_S`** (now 6s, was 3s) —
+  every active session gets equal time in roster order, regardless of
+  whether it needs attention, is working, or is idle. The v3.7.0 priority
+  scheme (attention beats working beats idle) let one stuck banner
+  monopolise the screen for as long as it stayed stuck; cycling through
+  everyone means you always see the rest too. The quota row's 5h/1w
+  alternation shares the same clock, so it is also now 6s.
+
+### Added
+- **`roster` on the status probe** — a per-slot breakdown (`sid`, `name`,
+  `age`, and `event`/`busy` when live), alongside the existing `sessions`
+  count. A bare count gives no way to tell a lingering entry from a
+  genuinely new session; this makes a surprising count a one-line lookup.
+- **`{"cmd":"forget","sid":"..."}`** — drops one session from the roster
+  immediately rather than waiting `SESSION_GONE_S` (15 min) to age out.
+  `doctor.mjs` now calls this on its own test session right after every run.
+- **Two guardrails on what gets onto the roster, and how long it stays**,
+  after a debugging session that itself produced two different phantom
+  entries (see Fixed, below):
+  - A push only touches the roster if it carries something session-scoped —
+    `title`, `session`, `gauge2`, `row.right`, `footer.right`, `busy`, or
+    `events`. A push carrying only account-level data (a correction to
+    `gauge1`/`gauge3`/`quiet` alone, say) updates those globals and never
+    creates or touches a slot.
+  - A slot that has never shown a title or real context — `UNCONFIRMED_GONE_S`,
+    2 minutes — is dropped far sooner than the normal 15-minute
+    `SESSION_GONE_S`. A genuine session reliably picks up one of those within
+    its first completed turn; a slot with neither after two minutes is far
+    more likely a stray or malformed push.
+
+### Fixed
+- **The weekly quota could get stuck on a fake value forever.**
+  `doctor.mjs`'s test push set `gauge3` to a hardcoded `{pct:61,reset:"3d4h"}`
+  to prove the alternation animation, but only restored it afterward when a
+  real weekly reading happened to be cached — if not, the fake value simply
+  had nothing to correct it, and nothing else ever resends `gauge3` on its
+  own. `pct:-1` is now a documented sentinel that hides the weekly row again
+  (`hasWeek` goes false), so the restore can always leave the device honest
+  even with no real value to restore to.
+- **A globals-only push (no `sid`, nothing session-scoped) used to create or
+  touch a roster slot anyway** — usually the shared `""` fallback slot,
+  showing up as a session with no name and empty gauges. Reproduced live
+  while manually correcting the account quota during this release's testing.
+  See the guardrail above.
+
+```
+clauled-pusher                 2/5
+────────────────────────────────
+5h            4h33m        55%      <- alternates with the weekly quota,
+███████████████████░░░░░░░░░░░░░       every 6s now, same as rotation
+ctx         357k/1M        45%
+███████████████░░░░░░░░░░░░░░░░░
+/ Running Bash
+────────────────────────────────
+Sonnet 5                 xhigh
+```
+
 ## [3.7.0] - 2026-08-13
 
 Multiple Claude Code sessions, tracked and rotated on the device with no host

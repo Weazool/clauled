@@ -18,7 +18,7 @@ Match on that rather than hardcoding a port, and it survives being moved.
 One JSON object per line, terminated with `\n`:
 
 ```json
-{"v":3,"sid":"a1b2c3d4","session":"clauled-pusher","title":"Sonnet 5","quiet":false,"gauge1":{"label":"5h","pct":55},"gauge3":{"label":"1w","pct":21,"reset":"3d4h"},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
+{"v":3,"sid":"a1b2c3d4","session":"clauled-pusher","title":"Sonnet 5","quiet":false,"gauge1":{"label":"5h","pct":55},"gauge3":{"label":"1w","pct":21,"reset":"20h49m"},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
 ```
 
 | Field | Type | Scope | Renders as |
@@ -59,18 +59,29 @@ push with no `sid` at all lands in a shared fallback slot, which is exactly
 the pre-v3.7.0 single-session behaviour — nothing breaks for a pusher that
 has not been updated.
 
-**Which session is shown rotates every 3 seconds (`ROTATE_INTERVAL_S`)**,
-picked by priority — the same "alert always wins" rule a single session
-already had, now deciding which SESSION gets shown, not only what one
-session's status row displays:
+**Which session is shown rotates every 6 seconds (`ROTATE_INTERVAL_S`)** —
+flat round-robin through every active session in roster order, regardless of
+whether it needs attention, is working, or is idle. Up to v3.7.0 this was
+picked by priority (attention beats working beats idle), but that let one
+stuck banner monopolise the screen for as long as it stayed stuck, hiding
+every other session in the meantime; cycling through everyone means you
+always see the rest too. The status row for whichever slot is showing still
+tells you its own state — see **Screen layout** below.
 
-1. Any session with a live `events` banner — rotate among those, ignore the rest
-2. Else any session with a live `busy` spinner — rotate among those
-3. Else every remaining session — rotate among all of them
+If the currently-shown session drops out of the roster entirely — pruned, or
+explicitly removed, see **Removing a session** below — the device snaps to
+the next one immediately rather than waiting for the next tick.
 
-If the active group changes — a session gets a new banner, or the one you
-were looking at falls out of it — the device snaps to the new group
-immediately rather than waiting for the next tick.
+**A slot only exists if a push actually carried something session-scoped** —
+`title`, `session`, `gauge2`, `row.right`, `footer.right`, `busy`, or
+`events`. A push with none of that — pure account-level data, e.g. a
+correction to `gauge1`/`gauge3`/`quiet` alone — updates those globals and
+never touches the roster. And **a slot that goes 2 minutes
+(`UNCONFIRMED_GONE_S`) without ever showing a `title` or real `gauge2`** is
+dropped early, well before the normal 15-minute `SESSION_GONE_S` — a genuine
+session reliably picks up at least one of those within its first completed
+turn, so a slot with neither after two minutes is far more likely a stray or
+malformed push than a session just being slow to report.
 
 **The header's right side is `N/M`** — position among *every* active session,
 not just the ones currently being rotated. Two sessions needing attention out
@@ -91,8 +102,8 @@ session whose first-ever push is a hook would otherwise show a blank left
 corner until its own statusline eventually fires. It falls back to the last
 model seen from *any* session rather than show nothing.
 
-`{"v":3,"cmd":"status"}` reports the current roster size as `sessions` — see
-**Status probe** below.
+`{"v":3,"cmd":"status"}` reports the current roster size as `sessions`, and a
+per-slot breakdown as `roster` — see **Status probe** below.
 
 ## Screen layout
 
@@ -123,20 +134,21 @@ off centre on every render.
 
 The status row resolves in priority order:
 
-1. **`events` banner** — the WHOLE PANEL inverts while this is live, not just
-   this row — see below. Always wins.
+1. **`events` banner** — the header AND this row invert while it is live, not
+   the gauges — see below. Always wins.
 2. **`busy` spinner** — animates on the device at ~3 Hz
 3. **sleep** — automatic after `STALE_AFTER_S`, not host-driven
 4. **nothing** — a legitimate state: the last turn ended over 5 minutes ago but
    the host is still pushing
 
-**A live `events` banner inverts every line on the screen, not just its own
-row.** `invertDisplay(true)` is a single controller command
+**A live `events` banner inverts the header and this row — white background,
+black text — leaving the gauges and footer in their normal colours.** This is
+drawn in software: a filled rectangle in the inverse colour behind normally-
+drawn text, confined to the two rows actually about the banner. Up to v3.7.0
+this used `invertDisplay(true)`, a single controller command
 (`SH110X_INVERTDISPLAY`) that flips every pixel's polarity in hardware — it
-does not touch the framebuffer, so the header, both gauges, the bars and the
-footer all come out inverted along with the banner text, for free. Sent once
-on the transition into and out of the state, not on every redraw. This is
-deliberately the loudest signal the device has: the whole screen, not one row.
+touched the whole panel, including both gauges, which turned out to be a
+louder signal than the banner needed.
 
 Above all of that, and independent of it: if `quiet` is `true` and idle exceeds
 `QUIET_IDLE_S` (default 900s / 15 min), the panel is powered off entirely —
@@ -201,7 +213,7 @@ does not start with `{`.
 ```
 
 ```json
-{"ok":true,"version":"3.7.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"sessions":2,"schema":3}
+{"ok":true,"version":"3.8.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"sessions":2,"roster":[{"sid":"a1b2c3d4","name":"clauled-pusher","age":3,"busy":"Running Bash"},{"sid":"e5f6a7b8","name":"other-project","age":47,"event":"Your turn"}],"schema":3}
 ```
 
 `display_ok` is meaningful only for I2C modules. **SPI has no acknowledgement,
@@ -214,7 +226,40 @@ this before assuming an unresponsive-looking device is broken at 2am.
 has ever been pushed, or every session has aged out; `last_push_age` tells
 you which (`-1` only in the former case).
 
+`roster` (v3.8.0+) is a breakdown of every slot: `sid`, `name`, `age` (seconds
+since its last push), and `event`/`busy` when either is currently live —
+omitted, not sent empty, otherwise. Without this, `"sessions":3` alone gives
+no way to tell a lingering, about-to-be-pruned entry from a genuinely new
+one; with it, a surprising count is a one-line lookup instead of a guess.
+
 Use this to confirm a port really is a Clauled device before pushing to it.
+
+## Removing a session
+
+```json
+{"v":3,"cmd":"forget","sid":"a1b2c3d4"}
+```
+
+Drops that one slot from the roster immediately (v3.8.0+), rather than
+waiting for `SESSION_GONE_S` (15 min) or `UNCONFIRMED_GONE_S` (2 min) to age
+it out on its own. Replies `{"ok":true}` whether or not a session with that
+`sid` was actually present — the caller does not need to know in advance.
+
+This exists for tools that create a session deliberately for a one-off test.
+`doctor.mjs`'s diagnostic push uses a dedicated `sid` (`doctor00`)
+specifically so it never collides with a real session, and now calls
+`forget` on it immediately after restoring the real values, instead of
+leaving it in the roster inflating the count for a quarter of an hour after
+every single run.
+
+**Firing several pushes back-to-back with no gap is not reliable** — each
+accepted line makes the device parse JSON and redraw the whole panel (an SPI
+transfer) before it reads more serial, and this can outrun a burst of pushes
+sent with no pacing, silently dropping the tail of the burst. Confirmed on
+real hardware, not theoretical. A normal hook only ever sends one push at a
+time, so this does not matter there; anything that fires several in a row —
+like a test/restore/forget sequence — should pace them with a short delay
+(100–150 ms is comfortably enough) between calls.
 
 ## Semantics that matter
 
@@ -289,7 +334,16 @@ block, with `five_hour` and `seven_day` each carrying `used_percentage` and
 cache the last reading and carry it forward. The
 `anthropic-ratelimit-unified-5h-*` response headers give the same figures and
 are now only a fallback for hosts that never send the block — a payload's
-`resets_at` matches the header epoch exactly.
+`resets_at` matches the header epoch exactly. **That header fallback only
+ever covers the 5h figure** — there is no equivalent header for the weekly
+one, so a cache holding both must be merged into, never wholesale
+overwritten, or a background 5h-only refresh silently destroys a
+previously-cached weekly reading.
+
+**A reset countdown (`row.left`, `gauge3.reset`) is always formatted as hours
+and minutes, never days** — `"76h23m"`, not `"3d4h"`. Multi-day countdowns
+just produce a large hour count. A device or pusher that ever displays a
+day-formatted string is showing a hardcoded literal, not a real reading.
 
 **Context occupancy** comes from the payload's `context_window` block when
 present — `context_window_size` with a `current_usage` breakdown. When it is

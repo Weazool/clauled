@@ -34,7 +34,14 @@
 // ── Display behaviour ─────────────────────────────────────────
 #define STALE_AFTER_S       300   // no push for a session this long -> show it as quiet
 #define SESSION_GONE_S      900   // no push for a session this long -> drop it from the roster
-#define ROTATE_INTERVAL_S     3   // multiple sessions in the same priority group -> cycle this often
+#define UNCONFIRMED_GONE_S  120   // a slot that has NEVER shown a title or real context (see
+                                   // Session::everPopulated) -> drop it this much sooner. Guards
+                                   // against a stray or malformed push - a test script, a future
+                                   // globals-only push, anything with no real session behind it -
+                                   // sitting in the roster for the full SESSION_GONE_S with
+                                   // nothing in it.
+#define ROTATE_INTERVAL_S     6   // multiple active sessions -> cycle through them this often
+                                   // (also the 5h/1w quota alternation rate - same clock)
 
 // Quiet hours are a HOST decision - the device has no clock and never will
 // (that is why NTP was removed entirely; see CHANGELOG v2.0.0). The host
