@@ -140,35 +140,41 @@ no tag.
 
 ### 8. SAFETY GATE — scan before anything goes public
 
-The firmware compiles `secrets.h` in, so a working `.bin` contains the WiFi password in
-cleartext. This repo is a **public fork**. Always run:
+Since v2.0.0 the device holds **no credentials**, so a release binary should contain
+nothing sensitive by construction. The gate stays because "should" is not "does" — this
+repo is a **public fork**, and publishing a credential is irreversible and indexed within
+seconds.
+
+**Match on VALUES, never on names.** A substring gate keyed on words like `WIFI_PASS` or
+`sk-ant` fires on `ESP_ERR_WIFI_PASSWORD` in the ESP-IDF error table and on the
+`sk-ant-oat01-...` placeholder in a README. Both have happened. A gate that cries wolf
+gets waved through, which is worse than no gate.
 
 ```bash
 BIN=.pio/build/esp32-c3-mini/firmware.bin
-LEAK=0
-for k in WIFI_SSID WIFI_PASSWORD CLAULED_PUSH_KEY; do
-  v=$(sed -n "s/^#define $k *\"\(.*\)\".*/\1/p" src/secrets.h)
-  [ -z "$v" ] && continue
-  if grep -aqF -- "$v" "$BIN"; then echo "LEAK: $k found in $BIN"; LEAK=1; fi
-done
-[ "$LEAK" -eq 0 ] && echo "clean - safe to attach"
+node -e '
+const fs=require("fs"),os=require("os"),p=require("path");
+const bin=fs.readFileSync(process.argv[1]);
+let leak=0;
+// Real values from the local config, never printed - only whether they appear.
+try {
+  const cfg=JSON.parse(fs.readFileSync(p.join(os.homedir(),".clauled.json"),"utf8"));
+  for (const k of ["token"]) {
+    const v=cfg[k];
+    if (v && v.length>20 && bin.includes(Buffer.from(v))) { console.log("LEAK: "+k); leak=1; }
+  }
+} catch {}
+console.log(leak ? "DO NOT ATTACH" : "clean - safe to attach");
+' "$BIN"
 ```
 
-Also confirm no credential value reached a tracked file:
+If `src/secrets.h` ever comes back, add its values to the same value-based check. Do not
+reintroduce a name-based one.
 
-```bash
-for v in $(sed -n 's/^#define \(WIFI_SSID\|WIFI_PASSWORD\|CLAULED_PUSH_KEY\) *"\(.*\)".*/\2/p' src/secrets.h); do
-  git grep -qF -- "$v" HEAD && echo "LEAK in tracked files: $v"
-done
-```
+**If anything leaks, do not attach the binary.** Report it and publish a notes-only
+release instead — the correct answer for a public repo. Never attach a binary that failed
+this scan, even if asked to "just ship it".
 
-**If anything leaks, do not attach the binary.** Report it and offer:
-- publish a **notes-only** release (the correct answer for a public repo), or
-- rebuild with placeholder credentials first — note the image is then non-functional until
-  reflashed, so it is of limited use to anyone
-
-Never attach a binary that failed this scan, even if asked to "just ship it" — publishing a
-credential is irreversible and gets indexed within seconds. Offer notes-only instead.
 
 ### 9. Publish
 
@@ -246,6 +252,9 @@ Claude Code — not merely a new chat.
 | Inferring the bump size from the diff | Ask |
 | Tagging before the build passes | Build first; a bad tag must be deleted on the remote too |
 | Attaching a binary without scanning | Run the gate every time, including on re-runs |
+| Pushing before reading the gate output | Read it first. Getting the answer you wanted is not the same as verifying it. |
+| A gate that matches on names, not values | `WIFI_PASS` hits `ESP_ERR_WIFI_PASSWORD`; `sk-ant` hits a README placeholder. Match real values only. |
+| Leaving the README's latest-release line behind | It sat at v3.0.0 for the whole of v3.0.1. Check it every time. |
 | Forgetting the README line | `version.h`, `CHANGELOG.md`, and `README.md` move together |
 | `gh release create` without `--repo` | On a fork, `gh` targets the upstream parent, not yours |
 | Inlining notes with `--notes` | Backticks and quotes get mangled; use `--notes-file` |
