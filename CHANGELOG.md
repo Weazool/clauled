@@ -11,6 +11,33 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-08-14
+
+No functional change. The firmware behaves identically; only what is *stored*
+in the image differs.
+
+### Fixed
+- **The build machine's absolute paths are no longer baked into the binary.**
+  ESP-IDF's logging macros embed `__FILE__`, and for framework sources that is
+  an absolute path — so `firmware.bin`, attached to every public release,
+  contained the developer's home directory (and with it their OS username)
+  **11 times**. No credential was ever involved: the device has held none
+  since v2.0.0, and the release safety gate that scans for real secret values
+  has always come back clean. This was ordinary build metadata that had no
+  reason to be published.
+
+  Fixed in `scripts/strip_build_paths.py` rather than a `build_flag`, for two
+  reasons that each cost a build to find:
+  `${platformio.packages_dir}` interpolates with **backslashes** while the
+  embedded paths use forward slashes, and GCC matches the prefix literally —
+  so the obvious one-liner silently does nothing. And hardcoding the
+  forward-slash form would have written the username into `platformio.ini`,
+  which is tracked, trading the leak for a worse one. Computing it at build
+  time fixes both and records nothing machine-specific.
+
+  Verified by scanning a clean rebuild: 11 occurrences before, 0 after, with
+  paths now reading `/pkg/framework-arduinoespressif32/…`.
+
 ## [4.0.0] - 2026-08-14
 
 **BREAKING.** The wire protocol is renamed so that every field says what it
