@@ -58,11 +58,16 @@
 
 // ── Protocol limits ───────────────────────────────────────────
 // A malformed or hostile line must not be able to exhaust heap.
-#define SCHEMA_VERSION   3
+#define SCHEMA_VERSION   4
+// Two levels, so STR(SCHEMA_VERSION) expands the macro before stringifying it
+// - the rejection reply names the schema, and must never drift from the
+// constant it is reporting.
+#define STR_(x)          #x
+#define STR(x)           STR_(x)
 #define LINE_MAX         2048
 #define FIELD_MAX        21     // one screen line
 #define MAX_SESSIONS       8    // bounded roster - a hard cap, not a tuning knob
-// EVENT_TTL_S / BUSY_TTL_S live in config.h with the other timing knobs.
+// BANNER_TTL_S / BUSY_TTL_S live in config.h with the other timing knobs.
 
 #ifdef DISPLAY_SPI
 // Software SPI: works on any GPIOs with no peripheral setup, and the 1 KB
@@ -84,13 +89,15 @@ Adafruit_SH1106G display(SCREEN_W, SCREEN_H, &Wire, -1);
 //     per-session and lives in a Session struct, one per concurrent
 //     Claude Code session pushing to this device.
 
-// Account-level quota. "5h" and "1w" are the host's labels, not hardcoded
-// here - only the SLOT (five-hour vs weekly) is fixed, same as gauge1/gauge2
-// were always host-labelled.
+// Account-level quota, from the wire's quota5h / quota7d. The LABELS ("5h",
+// "1w") are the host's, not hardcoded here - only the SLOT (five-hour vs
+// seven-day) is fixed. Note the field name says 7d (its source period, which
+// is what every upstream name calls it) while the label on the glass says
+// "1w", which is what fits in two characters.
 String        q5Label = "", q5Reset = "";
 float         q5Pct   = -1;
-String        qwLabel = "", qwReset = "";
-float         qwPct   = -1;
+String        q7Label = "", q7Reset = "";
+float         q7Pct   = -1;
 bool          quotaShowWeek = false;
 unsigned long quotaRotateMs = 0;
 
@@ -102,20 +109,20 @@ struct Session {
   bool   used = false;
   String sid  = "";
 
-  String title  = "";       // this session's own last-known model
-  String g2Label = "";
-  float  g2Pct   = -1;
-  String rowR    = "";
+  String model  = "";       // this session's own last-known model
+  String ctxLabel  = "";
+  float  ctxPct    = -1;
+  String ctxDetail = "";
   String effort  = "";
   String name    = "";      // header's left
 
   String        busyText = "";
   unsigned long busyAt   = 0;
-  String        eventText = "";
-  unsigned long eventAt   = 0;
+  String        bannerText = "";
+  unsigned long bannerAt   = 0;
 
   unsigned long lastPushMs = 0;
-  bool          everPopulated = false;  // has this slot ever shown a title or real context?
+  bool          everPopulated = false;  // has this slot ever shown a model or real context?
 };
 
 Session sessions[MAX_SESSIONS];
@@ -142,9 +149,9 @@ String fmtAge(unsigned long ms) {
   return String(s / 3600) + "h";
 }
 
-bool slotEventLive(const Session& s) {
-  if (s.eventText.length() == 0) return false;
-  return ((millis() - s.eventAt) / 1000UL) <= (unsigned long)EVENT_TTL_S;
+bool slotBannerLive(const Session& s) {
+  if (s.bannerText.length() == 0) return false;
+  return ((millis() - s.bannerAt) / 1000UL) <= (unsigned long)BANNER_TTL_S;
 }
 
 bool slotBusyLive(const Session& s) {
@@ -373,20 +380,20 @@ void drawBar(int y, float pct) {
  * session happens to be on screen. That is also why it keeps working once
  * the roster is empty: see the m==0 branch in drawScreen().
  *
- * Only alternates if a weekly reading has actually arrived - an older host
- * that never sends gauge3 just leaves the 5h row showing permanently, the
- * same "absence degrades gracefully" rule every other field here follows.
+ * Only alternates if a weekly reading has actually arrived - a host that
+ * never sends quota7d just leaves the 5h row showing permanently, the same
+ * "absence degrades gracefully" rule every other field here follows.
  */
 void drawQuotaRow() {
-  bool hasWeek = qwPct >= 0;
+  bool hasWeek = q7Pct >= 0;
   if (hasWeek && millis() - quotaRotateMs >= (unsigned long)ROTATE_INTERVAL_S * 1000UL) {
     quotaShowWeek = !quotaShowWeek;
     quotaRotateMs = millis();
   }
   bool showWeek = hasWeek && quotaShowWeek;
   if (showWeek) {
-    drawRow3(ROW1_Y, qwLabel, qwReset, pctText(qwPct));
-    drawBar(BAR1_Y, qwPct);
+    drawRow3(ROW1_Y, q7Label, q7Reset, pctText(q7Pct));
+    drawBar(BAR1_Y, q7Pct);
   } else {
     drawRow3(ROW1_Y, q5Label, q5Reset, pctText(q5Pct));
     drawBar(BAR1_Y, q5Pct);
@@ -516,7 +523,7 @@ void drawScreen(bool force = false) {
 
   int shownIdx = pickSlotToShow();
   Session& s = sessions[shownIdx];
-  const bool attn = slotEventLive(s);
+  const bool attn = slotBannerLive(s);
 
   display.clearDisplay();
   display.setTextSize(1);
@@ -540,16 +547,16 @@ void drawScreen(bool force = false) {
 
   drawQuotaRow();   // account-level - same content regardless of which session this is
 
-  drawRow3(ROW2_Y, s.g2Label, s.rowR, pctText(s.g2Pct));
-  drawBar(BAR2_Y, s.g2Pct);
+  drawRow3(ROW2_Y, s.ctxLabel, s.ctxDetail, pctText(s.ctxPct));
+  drawBar(BAR2_Y, s.ctxPct);
 
   // Status row resolves in priority order: an alert always wins over a
   // spinner, a spinner over sleep. Nothing at all is a legitimate state - it
-  // means a turn ended more than EVENT_TTL_S ago but the host is still alive.
+  // means a turn ended more than BANNER_TTL_S ago but the host is still alive.
   if (attn) {
     display.fillRect(0, STATUS_ROW_Y, SCREEN_W, STATUS_ROW_H, SH110X_WHITE);
     display.setTextColor(SH110X_BLACK);
-    drawCenter(STATUS_TEXT_Y, s.eventText);
+    drawCenter(STATUS_TEXT_Y, s.bannerText);
     display.setTextColor(SH110X_WHITE);
   }
   else if (slotBusyLive(s))  drawBusy(s.busyText);
@@ -562,7 +569,7 @@ void drawScreen(bool force = false) {
   // payloads never carry the model, so a session whose first-ever push is a
   // hook would otherwise show a blank left corner until its own statusline
   // eventually fires. A slightly-stale model name reads better than a blank.
-  drawLR(BOTTOM_Y, s.title.length() ? s.title : lastModel, s.effort);
+  drawLR(BOTTOM_Y, s.model.length() ? s.model : lastModel, s.effort);
 
   display.display();
 }
@@ -575,10 +582,28 @@ String field(JsonVariantConst v, const String& fallback) {
   return String((const char*)(v | "")).substring(0, FIELD_MAX);
 }
 
-void applyGauge(JsonVariantConst g, String& label, float& pct) {
+/**
+ * Merge one metric object - quota5h, quota7d or context - into its state.
+ *
+ * All three are {label, pct, <detail>}; only the detail's KEY differs, because
+ * a quota's detail is always a countdown ("reset") while the context's is a
+ * free-form token count ("detail"). Hence detailKey rather than three
+ * near-identical functions.
+ *
+ * THE DETAIL IS DROPPED WHEN A NEW PCT ARRIVES WITHOUT ONE. A detail describes
+ * the value it sits beside; pairing a fresh percentage with a countdown
+ * computed for an older reading is how a hardcoded "3d4h" once survived long
+ * enough to be shown next to a real weekly figure. In v3 only gauge3 had this
+ * rule, purely because the other two kept their detail in a separate `row`
+ * object; merging them removes that excuse.
+ */
+void applyMetric(JsonVariantConst g, String& label, float& pct,
+                 String& detail, const char* detailKey) {
   if (g.isNull()) return;
   if (!g["label"].isNull()) label = field(g["label"], label);
-  if (!g["pct"].isNull())   pct   = g["pct"].as<float>();
+  if (!g[detailKey].isNull())  detail = field(g[detailKey], detail);
+  else if (!g["pct"].isNull()) detail = "";
+  if (!g["pct"].isNull())   pct = g["pct"].as<float>();
 }
 
 void sendStatus() {
@@ -610,19 +635,20 @@ void sendStatus() {
     o["sid"]  = sess.sid;
     o["name"] = sess.name;
     o["age"]  = (long)((millis() - sess.lastPushMs) / 1000UL);
-    if (slotEventLive(sess)) o["event"] = sess.eventText;
-    if (slotBusyLive(sess))  o["busy"]  = sess.busyText;
+    if (slotBannerLive(sess)) o["banner"] = sess.bannerText;
+    if (slotBusyLive(sess))   o["busy"]   = sess.busyText;
   }
 
   // Row 1's state. "alternating" is false whenever no weekly reading has
   // arrived (pct < 0) - which looks identical on the glass to a broken
   // rotation, and previously there was no way to tell the two apart without
   // a camera. "showing" is which of the two is on screen this instant.
+  // These keys name row 1's two SLOTS, not the wire fields that fill them.
   JsonObject q = doc["quota"].to<JsonObject>();
   q["5h"]          = q5Pct;
-  q["1w"]          = qwPct;
-  q["alternating"] = (qwPct >= 0);
-  q["showing"]     = (qwPct >= 0 && quotaShowWeek) ? "1w" : "5h";
+  q["7d"]          = q7Pct;
+  q["alternating"] = (q7Pct >= 0);
+  q["showing"]     = (q7Pct >= 0 && quotaShowWeek) ? "7d" : "5h";
 
   doc["schema"]        = SCHEMA_VERSION;
   String out;
@@ -638,8 +664,19 @@ void handleLine(const String& line) {
 
   JsonObjectConst root = doc.as<JsonObjectConst>();
 
-  int v = root["v"] | SCHEMA_VERSION;
-  if (v != SCHEMA_VERSION) { reply("{\"error\":\"unsupported schema version\"}"); return; }
+  // `| 0`, NOT `| SCHEMA_VERSION`. An absent "v" used to default to the
+  // CURRENT schema, so a v3 push that simply omitted the field was accepted
+  // and then silently rendered nothing, every field name being unknown - the
+  // worst possible failure for a hard break, since it looks like success.
+  // A missing version is now rejected exactly like a wrong one.
+  //
+  // The reply names the schema this device speaks. "Unsupported" on its own
+  // tells a mismatched host that it is wrong but not what to be instead.
+  int v = root["v"] | 0;
+  if (v != SCHEMA_VERSION) {
+    reply("{\"error\":\"unsupported schema version\",\"schema\":" STR(SCHEMA_VERSION) "}");
+    return;
+  }
 
   const char* cmd = root["cmd"] | "";
   if (strcmp(cmd, "status") == 0) { sendStatus(); return; }
@@ -664,43 +701,27 @@ void handleLine(const String& line) {
   // quiet hours.
   if (!root["quiet"].isNull()) quietHours = root["quiet"].as<bool>();
 
-  // gauge1/row.left (the 5h account quota) and gauge3 (the weekly one) are
-  // ALSO global, for the same reason quiet is - the same number regardless
-  // of which session reports it. Every push updates them, whichever session
-  // it came from.
-  JsonVariantConst g1 = root["gauge1"];
-  if (!g1.isNull()) {
-    if (!g1["label"].isNull()) q5Label = field(g1["label"], q5Label);
-    if (!g1["pct"].isNull())   q5Pct   = g1["pct"].as<float>();
-  }
-  JsonVariantConst g3 = root["gauge3"];
-  if (!g3.isNull()) {
-    if (!g3["label"].isNull()) qwLabel = field(g3["label"], qwLabel);
-    if (!g3["pct"].isNull())   qwPct   = g3["pct"].as<float>();
-    // The detail belongs to the value it sits beside. An update that carries
-    // a new percentage but no detail must drop the old one rather than pair a
-    // fresh number with a countdown computed for a different reading - that
-    // is how a hardcoded "3d4h" survived long enough to be shown next to a
-    // real weekly percentage.
-    if (!g3["reset"].isNull())      qwReset = field(g3["reset"], qwReset);
-    else if (!g3["pct"].isNull())   qwReset = "";
-  }
+  // The two account quotas are ALSO global, for the same reason quiet is -
+  // the same number regardless of which session reports it. Every push
+  // updates them, whichever session it came from. Each object now carries its
+  // own detail, so there is no longer a field that is half-global
+  // (v3's row.left) and half-per-session (row.right) sharing one object.
+  applyMetric(root["quota5h"], q5Label, q5Pct, q5Reset, "reset");
+  applyMetric(root["quota7d"], q7Label, q7Pct, q7Reset, "reset");
 
   // A push only touches the roster if it carries something session-scoped -
-  // title, session name, context, activity, or an alert. A push with NONE of
-  // that - pure account-level data, e.g. a correction to gauge1/gauge3/quiet
-  // alone - updates those globals and stops there. Without this guard, even
-  // a globals-only push still called findOrCreateSlot() and touched a slot
-  // (the shared "" one, most often, since a globals-only push usually has no
-  // reason to carry a sid either) for a "session" that was never actually
-  // there - a phantom entry with nothing in it, which pruning alone cannot
-  // prevent since the slot is freshly touched every time it happens again.
-  JsonVariantConst r = root["row"];
-  bool hasRowRight = !r.isNull() && !r["right"].isNull();
+  // model, session name, context, effort, activity, or a banner. A push with
+  // NONE of that - pure account-level data, e.g. a correction to the quotas
+  // or quiet alone - updates those globals and stops there. Without this
+  // guard, even a globals-only push called findOrCreateSlot() and touched a
+  // slot (the shared "" one, most often, since a globals-only push usually
+  // has no reason to carry a sid either) for a "session" that was never
+  // actually there - a phantom entry with nothing in it, which pruning alone
+  // cannot prevent since the slot is freshly touched every time it recurs.
   bool touchesSession =
-    !root["title"].isNull() || !root["session"].isNull() || !root["gauge2"].isNull() ||
-    !root["busy"].isNull()  || !root["events"].isNull()   || hasRowRight ||
-    (!root["footer"].isNull() && !root["footer"]["right"].isNull());
+    !root["model"].isNull()  || !root["session"].isNull() ||
+    !root["context"].isNull()|| !root["busy"].isNull()    ||
+    !root["banner"].isNull() || !root["effort"].isNull();
 
   if (touchesSession) {
     String sid = field(root["sid"], "");
@@ -708,29 +729,25 @@ void handleLine(const String& line) {
     Session& s = sessions[idx];
 
     // Merge, never replace: a hook pushing only "busy" must not wipe this
-    // session's gauges, and its statusline pushing only gauges must not clear
-    // its busy state.
-    // Clearing THIS session's own title is legitimate. Promoting that empty
+    // session's context, and its statusline pushing only metrics must not
+    // clear its busy state.
+    //
+    // Clearing THIS session's own model is legitimate. Promoting that empty
     // string into the account-level fallback is not: lastModel is what the
-    // footer and the Idle screen fall back to when a session has not reported
-    // a model of its own, so blanking it produces exactly the empty corner
-    // that fallback exists to prevent. Only a real name is worth keeping.
-    if (!root["title"].isNull()) {
-      s.title = field(root["title"], s.title);
-      if (s.title.length()) lastModel = s.title;
+    // footer falls back to when a session has not reported a model of its
+    // own, so blanking it produces exactly the empty corner that fallback
+    // exists to prevent. Only a real name is worth keeping.
+    if (!root["model"].isNull()) {
+      s.model = field(root["model"], s.model);
+      if (s.model.length()) lastModel = s.model;
     }
-    if (!root["session"].isNull()) s.name  = field(root["session"], s.name);
-    applyGauge(root["gauge2"], s.g2Label, s.g2Pct);
-    if (hasRowRight) s.rowR = field(r["right"], s.rowR);
+    if (!root["session"].isNull()) s.name = field(root["session"], s.name);
+    applyMetric(root["context"], s.ctxLabel, s.ctxPct, s.ctxDetail, "detail");
+    if (!root["effort"].isNull()) s.effort = field(root["effort"], s.effort);
 
-    // A slot counts as "confirmed" once it has shown a title or real context -
+    // A slot counts as "confirmed" once it has shown a model or real context -
     // substance, not just activity - see UNCONFIRMED_GONE_S in pruneSessions().
-    if (s.title.length() || s.g2Pct >= 0) s.everPopulated = true;
-
-    // footer.left is not read - it used to carry cost, which is gone. A pusher
-    // still sending it does no harm; the value is simply never drawn.
-    JsonVariantConst f = root["footer"];
-    if (!f.isNull() && !f["right"].isNull()) s.effort = field(f["right"], s.effort);
+    if (s.model.length() || s.ctxPct >= 0) s.everPopulated = true;
 
     // An empty string clears this session's spinner - that is how Stop ends a turn.
     if (!root["busy"].isNull()) {
@@ -739,23 +756,21 @@ void handleLine(const String& line) {
       // Going busy also clears this session's own banner: if it is working, it
       // is not your turn on THAT one. Without this a "Your turn" banner
       // outranks every spinner beneath it for its full TTL.
-      if (s.busyText.length()) s.eventText = "";
+      if (s.busyText.length()) s.bannerText = "";
     }
 
-    JsonArrayConst evs = root["events"];
-    if (!evs.isNull()) {
-      for (JsonObjectConst e : evs) {
-        s.eventText = String((const char*)(e["text"] | "")).substring(0, FIELD_MAX);
-        s.eventAt   = millis();
-        if (s.eventText.length()) s.busyText = "";   // an alert supersedes the spinner
-      }
+    // Mirrors busy exactly: an empty string clears, a non-empty one wins over
+    // the spinner. v3 sent an ARRAY of {type,text} here but the device only
+    // ever kept the last element and never read `type`, so the array was
+    // carrying no information the last string did not.
+    if (!root["banner"].isNull()) {
+      s.bannerText = field(root["banner"], "");
+      s.bannerAt   = millis();
+      if (s.bannerText.length()) s.busyText = "";   // an alert supersedes the spinner
     }
 
     s.lastPushMs = millis();
   }
-
-  // row.left (the 5h reset detail) is global regardless of touchesSession.
-  if (!r.isNull() && !r["left"].isNull()) q5Reset = field(r["left"], q5Reset);
 
   lastAnyPushMs = millis();
   everAnyPushed = true;
@@ -884,8 +899,8 @@ void loop() {
   bool btn = digitalRead(BOOT_BTN);
   if (btn == LOW && lastBtn == HIGH) {
     if (lastShownSlot >= 0 && lastShownSlot < MAX_SESSIONS && sessions[lastShownSlot].used) {
-      sessions[lastShownSlot].eventText = "";
-      sessions[lastShownSlot].busyText  = "";
+      sessions[lastShownSlot].bannerText = "";
+      sessions[lastShownSlot].busyText   = "";
     }
     drawScreen(true);
     delay(200);

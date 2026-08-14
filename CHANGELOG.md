@@ -11,6 +11,44 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-08-14
+
+**BREAKING.** The wire protocol is renamed so that every field says what it
+actually does. Schema is now `4` and the device accepts **only** `4` — a v3
+push is rejected with `{"error":"unsupported schema version","schema":4}`.
+Requires clauled-pusher **4.0.0**; the two move together, and from here the
+major version of both projects equals the schema version.
+
+### Changed — breaking
+- **`title` → `model`.** It carried the model but was named for a header
+  deleted back in v3.1.0. v3.4.0 knowingly kept the wrong name for wire
+  compatibility; this is that debt being paid.
+- **`gauge1` + `row.left` → `quota5h`**, **`gauge3` → `quota7d`**,
+  **`gauge2` + `row.right` → `context`.** Each metric now carries its own
+  detail. There was never a third gauge — `gauge3` time-shares row 1 with
+  `gauge1` — and `row` was the worst of it: one object holding two fields of
+  *different scope*, its left half account-global and its right half
+  per-session.
+- **`footer.right` → `effort`**, and the `footer` object is gone. Its other
+  half (`footer.left`, cost) has been dead since v3.4.0.
+- **`events: [{type,text}]` → `banner: "..."`.** The array only ever kept its
+  last element and `type` was never read by any firmware. An empty string
+  clears it, exactly like `busy`.
+- **`v` is now required.** It was `root["v"] | SCHEMA_VERSION`, so an absent
+  version defaulted to *current* — a stale push with no `v` was accepted and
+  then silently rendered nothing, every field name being unknown. That is the
+  worst possible failure for a hard break, because it looks like success.
+- **A new percentage drops a stale detail** on all three metrics. Only
+  `gauge3` had this rule before, purely because the other two kept their
+  detail in a separate object; merging removed the excuse. This is a real
+  semantic tightening, not a rename — it is what stops a countdown computed
+  for one reading being shown beside another.
+- `EVENT_TTL_S` → `BANNER_TTL_S`, matching the field it governs.
+
+### Added
+- The rejection reply names the schema the device speaks, so a mismatched
+  host is told what to be rather than only that it is wrong.
+
 ## [3.9.1] - 2026-08-14
 
 ### Changed

@@ -41,7 +41,7 @@
                                    // Was 180. A false "working" on an idle session is more
                                    // misleading than a spinner that stops early during a long
                                    // stretch with no tool calls, and 3 minutes of it was a lot.
-#define EVENT_TTL_S         300   // "Your turn" banner self-expires after this. Normally cleared
+#define BANNER_TTL_S        300   // "Your turn" banner self-expires after this. Normally cleared
                                    // far sooner - the next prompt's busy push supersedes it.
 #define STALE_AFTER_S       300   // no push for a session this long -> show it as quiet
 #define SESSION_GONE_S      900   // no push for a session this long -> drop it from the roster

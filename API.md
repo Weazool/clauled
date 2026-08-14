@@ -18,32 +18,67 @@ Match on that rather than hardcoding a port, and it survives being moved.
 One JSON object per line, terminated with `\n`:
 
 ```json
-{"v":3,"sid":"a1b2c3d4","session":"clauled-pusher","title":"Sonnet 5","quiet":false,"gauge1":{"label":"5h","pct":55},"gauge3":{"label":"1w","pct":21,"reset":"20h49m"},"gauge2":{"label":"ctx","pct":45},"row":{"left":"4h33m","right":"357k/1M"},"footer":{"right":"xhigh"}}
+{"v":4,"sid":"a1b2c3d4","session":"clauled-pusher","model":"Sonnet 5","quiet":false,"quota5h":{"label":"5h","pct":55,"reset":"4h33m"},"quota7d":{"label":"1w","pct":21,"reset":"20h49m"},"context":{"label":"ctx","pct":45,"detail":"357k/1M"},"effort":"xhigh","busy":"Running Bash"}
 ```
 
 | Field | Type | Scope | Renders as |
 |---|---|---|---|
-| `v` | int | — | Schema version, currently `3`. A mismatch is rejected, never guessed at. |
+| `v` | int | — | Schema version, **required**, currently `4`. Anything else — including absent — is rejected, never guessed at. |
 | `sid` | string | key | Which session this push belongs to — see **Multiple sessions** below |
 | `session` | string | per-session | Header, left |
-| `title` | string | per-session | Footer, left — the model |
+| `model` | string | per-session | Footer, left |
+| `effort` | string | per-session | Footer, right |
 | `quiet` | bool | global | Not rendered directly — see **Quiet hours** below |
-| `gauge1` / `row.left` | object / string | global | Row 1, alternating with `gauge3` — see **Multiple sessions** |
-| `gauge3` | object | global | `{ "label", "pct", "reset" }` — the other half of row 1's alternation |
-| `gauge2` / `row.right` | object / string | per-session | Row 2 — context occupancy |
-| `footer` | object | per-session | `{ "right": string }` — the effort level. `left` is accepted but ignored — see Notes. |
+| `quota5h` | object | global | `{ "label", "pct", "reset" }` — row 1, alternating with `quota7d` |
+| `quota7d` | object | global | `{ "label", "pct", "reset" }` — the other half of row 1's alternation |
+| `context` | object | per-session | `{ "label", "pct", "detail" }` — row 2, context occupancy |
 | `busy` | string | per-session | Spinner text. **Empty string clears it.** |
-| `events` | array | per-session | `[{ "text": string }]` — raises an inverted banner |
+| `banner` | string | per-session | Raises an inverted banner. **Empty string clears it.** |
+
+**The three metric objects share one shape**: a `label` for the glass, a `pct`
+for the bar, and a detail. Only the detail's key differs — a quota's is always
+a countdown (`reset`), the context's is a free-form figure (`detail`) — which
+is why they are not spelled the same.
+
+**A field name says what the value IS, never where it lands.** `quota7d` is the
+seven-day figure (what every upstream source calls it: `rate_limits.seven_day`,
+`anthropic-ratelimit-unified-7d-*`); its `label` is `"1w"`, because that is what
+fits in two characters. The field is the source, the label is the reading.
 
 **"global" fields are the same value regardless of which session's push
 carries them** — the account quota does not belong to any one session, so the
 last push to set it wins, full stop, no merge-per-session. **"per-session"
 fields are tracked separately per `sid`** — see below.
 
-`sid`, `gauge3` and the per-session scoping were added in v3.7.0; `quiet` in
-v3.5.0; `session`/`footer.right` in v3.3.0. All additive or render-only — a
-v3.2.0-or-later pusher that never sends `sid` still renders correctly, landing
-everything in the device's one shared fallback slot exactly as it always did.
+### v4 is a hard break
+
+Every schema before this one was additive: an older pusher kept rendering,
+because a field it did not know about simply never arrived. **v4 is not.** It
+renames fields rather than adding them, so a v3 push carries nothing this
+firmware recognises — and a push that renders nothing while reporting success
+is worse than one that fails. So it fails, loudly and by design:
+
+```json
+{"error":"unsupported schema version","schema":4}
+```
+
+The reply names the schema the device speaks, so a mismatched host is told what
+to be rather than only that it is wrong. **`v` is required** — an absent `v` is
+rejected exactly like a wrong one, because defaulting it to "current" is how a
+stale push gets accepted and then silently renders nothing.
+
+Firmware and pusher therefore move together. Both projects use the major
+version to say so: **the major version equals the schema version**, so firmware
+4.x speaks v4 and needs pusher 4.x, and the question "which firmware do I need"
+is answered by one digit.
+
+What changed from v3, and why: `title`→`model` (it carried the model but was
+named for a header deleted in v3.1.0), `gauge1`+`row.left`→`quota5h`,
+`gauge3`→`quota7d` (there was never a third gauge — it time-shares row 1),
+`gauge2`+`row.right`→`context`, `footer.right`→`effort`, `events`→`banner`
+(the array only ever kept its last element and its `type` was never read).
+`row` and `footer` are gone: `row` held two fields of *different scope* — its
+left half was account-global, its right half per-session.
 
 Every string is truncated to **21 characters**, one screen line. `busy` should
 stay under 19 to leave room for the spinner.
@@ -55,9 +90,10 @@ and decides on its own which one to show — this needs no host-side
 coordination beyond tagging each push with the session it came from.
 
 **A session with no push in 15 minutes (`SESSION_GONE_S`) is dropped.** A
-push with no `sid` at all lands in a shared fallback slot, which is exactly
-the pre-v3.7.0 single-session behaviour — nothing breaks for a pusher that
-has not been updated.
+push with no `sid` at all lands in a shared fallback slot — perfectly valid
+for a host that only ever drives one session, and the behaviour every pusher
+had before `sid` existed. (It is not a compatibility path: a v3 push is
+rejected on its version long before `sid` is looked at.)
 
 **Which session is shown rotates every 6 seconds (`ROTATE_INTERVAL_S`)** —
 flat round-robin through every active session in roster order, regardless of
@@ -73,11 +109,11 @@ explicitly removed, see **Removing a session** below — the device snaps to
 the next one immediately rather than waiting for the next tick.
 
 **A slot only exists if a push actually carried something session-scoped** —
-`title`, `session`, `gauge2`, `row.right`, `footer.right`, `busy`, or
-`events`. A push with none of that — pure account-level data, e.g. a
-correction to `gauge1`/`gauge3`/`quiet` alone — updates those globals and
+`model`, `session`, `context`, `effort`, `busy`, or `banner`. A push with
+none of that — pure account-level data, e.g. a correction to
+`quota5h`/`quota7d`/`quiet` alone — updates those globals and
 never touches the roster. And **a slot that goes 2 minutes
-(`UNCONFIRMED_GONE_S`) without ever showing a `title` or real `gauge2`** is
+(`UNCONFIRMED_GONE_S`) without ever showing a `model` or real `context`** is
 dropped early, well before the normal 15-minute `SESSION_GONE_S` — a genuine
 session reliably picks up at least one of those within its first completed
 turn, so a slot with neither after two minutes is far more likely a stray or
@@ -89,7 +125,7 @@ of five total shows `"2/5"` then `"4/5"`, not `"1/2"` then `"2/2"` — the
 number always tells you the true scale.
 
 **Once every session has aged out, the panel does not go blank — but it does
-strip back.** The account quota (`gauge1`/`gauge3`) survives the roster
+strip back.** The account quota (`quota5h`/`quota7d`) survives the roster
 emptying; it was never session data. So the idle screen is exactly three
 things: the header `"Idle"`, row 1 still alternating, and a sleep animation
 filling everything below it.
@@ -97,7 +133,7 @@ filling everything below it.
 Nothing else is drawn — no context row, no status row, no footer rule, and
 **no model**. Every one of those describes a session, and there is no session
 to describe; a model name left sitting under an empty roster is stating
-something that is no longer true. `title` is still remembered, and reappears
+something that is no longer true. `model` is still remembered, and reappears
 the moment a session does.
 
 Nothing having ever been pushed at all shows the original `"Waiting for
@@ -110,7 +146,7 @@ otherwise show a blank left corner until its own statusline eventually fires.
 It falls back to the last model seen from *any* session rather than show
 nothing. (The idle screen has no footer at all — see above.)
 
-`{"v":3,"cmd":"status"}` reports the current roster size as `sessions`, and a
+`{"v":4,"cmd":"status"}` reports the current roster size as `sessions`, and a
 per-slot breakdown as `roster` — see **Status probe** below.
 
 ## Screen layout
@@ -118,17 +154,17 @@ per-slot breakdown as `roster` — see **Status probe** below.
 ```
 clauled-pusher                 2/5      session | N/M
 ────────────────────────────────
-5h           4h33m        55%           gauge1.label | row.left | gauge1.pct
-███████████████████░░░░░░░░░░░░░        gauge1.pct   (alternates with gauge3
+5h           4h33m        55%           quota5h.label | .reset | .pct
+███████████████████░░░░░░░░░░░░░        quota5h.pct  (alternates with quota7d
 ctx         357k/1M        45%           every ROTATE_INTERVAL_S)
-███████████████░░░░░░░░░░░░░░░░░    gauge2.pct
-/ Running Bash                      busy / events / sleep
+███████████████░░░░░░░░░░░░░░░░░    context.pct
+/ Running Bash                      busy / banner / sleep
 ────────────────────────────────
-Sonnet 5                 xhigh      title | footer.right
+Sonnet 5                 xhigh      model | effort
 ```
 
 **Each data row is three columns**: the gauge label flush left, its paired `row`
-(or, for `gauge3`, its own bundled `reset`) centred, the percentage flush
+(`reset` or `detail`) centred, the percentage flush
 right. The device places them — the host just supplies the strings.
 
 The middle is centred on the **screen**, not on the gap, so it does not shift
@@ -142,14 +178,14 @@ off centre on every render.
 
 The status row resolves in priority order:
 
-1. **`events` banner** — the header AND this row invert while it is live, not
+1. **`banner`** — the header AND this row invert while it is live, not
    the gauges — see below. Always wins.
 2. **`busy` spinner** — animates on the device at ~3 Hz
 3. **sleep** — automatic after `STALE_AFTER_S`, not host-driven
 4. **nothing** — a legitimate state: the last turn ended over 5 minutes ago but
    the host is still pushing
 
-**A live `events` banner inverts the header and this row — white background,
+**A live `banner` inverts the header and this row — white background,
 black text — leaving the gauges and footer in their normal colours.** This is
 drawn in software: a filled rectangle in the inverse colour behind normally-
 drawn text, confined to the two rows actually about the banner. Up to v3.7.0
@@ -170,7 +206,7 @@ in v2.0.0. Whether it is currently "quiet hours" is a **host** decision, sent
 on every push as a plain boolean:
 
 ```json
-{"v":3,"quiet":true}
+{"v":4,"quiet":true}
 ```
 
 The device only owns the OTHER half: how long is idle. `quiet:true` plus more
@@ -195,7 +231,7 @@ to prove the device is alive, not a sustained wake. The very next tick
 re-applies the policy and, since a button press does not reset the idle timer,
 puts it straight back to sleep.
 
-`{"v":3,"cmd":"status"}` reports the current state as `quiet_sleep` — see
+`{"v":4,"cmd":"status"}` reports the current state as `quiet_sleep` — see
 Status probe below. A dark panel with `quiet_sleep:true` is working as
 intended, not a fault.
 
@@ -207,7 +243,7 @@ Every line is answered with a single JSON object:
 |---|---|
 | `{"ok":true}` | Accepted |
 | `{"error":"bad JSON"}` | Line did not parse |
-| `{"error":"unsupported schema version"}` | `v` is not 3 |
+| `{"error":"unsupported schema version","schema":4}` | `v` is absent, or is not 4. The reply names the schema this device speaks. |
 | `{"error":"line too long"}` | Over 2048 bytes |
 
 **Log output is distinguishable from replies.** Human-readable logging is
@@ -217,11 +253,11 @@ does not start with `{`.
 ## Status probe
 
 ```json
-{"v":3,"cmd":"status"}
+{"v":4,"cmd":"status"}
 ```
 
 ```json
-{"ok":true,"version":"3.9.1","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"sessions":2,"roster":[{"sid":"a1b2c3d4","name":"clauled-pusher","age":3,"busy":"Running Bash"},{"sid":"e5f6a7b8","name":"other-project","age":47,"event":"Your turn"}],"quota":{"5h":57,"1w":34,"alternating":true,"showing":"1w"},"schema":3}
+{"ok":true,"version":"4.0.0","display_ok":true,"uptime":141,"last_push_age":114,"quiet_sleep":false,"sessions":2,"roster":[{"sid":"a1b2c3d4","name":"clauled-pusher","age":3,"busy":"Running Bash"},{"sid":"e5f6a7b8","name":"other-project","age":47,"banner":"Your turn"}],"quota":{"5h":57,"7d":34,"alternating":true,"showing":"7d"},"schema":4}
 ```
 
 `display_ok` is meaningful only for I2C modules. **SPI has no acknowledgement,
@@ -234,24 +270,25 @@ this before assuming an unresponsive-looking device is broken at 2am.
 has ever been pushed, or every session has aged out; `last_push_age` tells
 you which (`-1` only in the former case).
 
-`roster` (v3.8.0+) is a breakdown of every slot: `sid`, `name`, `age` (seconds
-since its last push), and `event`/`busy` when either is currently live —
-omitted, not sent empty, otherwise. Without this, `"sessions":3` alone gives
-no way to tell a lingering, about-to-be-pruned entry from a genuinely new
-one; with it, a surprising count is a one-line lookup instead of a guess.
+`roster` is a breakdown of every slot: `sid`, `name`, `age` (seconds since its
+last push), and `banner`/`busy` when either is currently live — omitted, not
+sent empty, otherwise. Without this, `"sessions":3` alone gives no way to tell
+a lingering, about-to-be-pruned entry from a genuinely new one; with it, a
+surprising count is a one-line lookup instead of a guess.
 
-`quota` (v3.9.0+) is row 1's state: both readings (`-1` when never received),
-whether it is `alternating`, and which of the two it is `showing` this
-instant. `alternating` is false exactly when no weekly reading has arrived,
-which is the only real reason row 1 ever looks stuck — and on the glass that
-is indistinguishable from a broken rotation, so the device says which.
+`quota` is row 1's state: both readings (`-1` when never received), whether it
+is `alternating`, and which of the two it is `showing` this instant.
+`alternating` is false exactly when no weekly reading has arrived, which is
+the only real reason row 1 ever looks stuck — and on the glass that is
+indistinguishable from a broken rotation, so the device says which. Its
+`"5h"`/`"7d"` keys name row 1's two **slots**, not the fields that fill them.
 
 Use this to confirm a port really is a Clauled device before pushing to it.
 
 ## Removing a session
 
 ```json
-{"v":3,"cmd":"forget","sid":"a1b2c3d4"}
+{"v":4,"cmd":"forget","sid":"a1b2c3d4"}
 ```
 
 Drops that one slot from the roster immediately (v3.8.0+), rather than
@@ -300,8 +337,8 @@ pacing costs almost nothing and keeps a host working against older firmware.
 
 **Everything merges — per session for per-session fields, globally for global
 ones.** A hook pushing only `busy` must not wipe that session's gauges, and
-the statusline pushing only gauges must not clear its busy state. `gauge1`/
-`gauge3`/`quiet`, being global, merge against the single shared copy
+the statusline pushing only metrics must not clear its busy state. `quota5h`/
+`quota7d`/`quiet`, being global, merge against the single shared copy
 regardless of which session's push carries them. Send partial payloads
 freely — that is the intended usage.
 
@@ -319,7 +356,7 @@ gauges stay readable and other sessions keep rotating normally.
 
 **Busy self-expires** after `BUSY_TTL_S` (default 90s) per session, so a
 missed `Stop` hook cannot leave that one spinning forever. Banners expire
-after `EVENT_TTL_S` (default 300s). The
+after `BANNER_TTL_S` (default 300s). The
 BOOT button clears whichever session is *currently on screen* — not the whole
 roster — so acknowledging one session's banner does not silently dismiss a
 different session's "Your turn" you have not seen yet.
@@ -353,7 +390,7 @@ PowerShell, round trip — hold DTR/RTS low or opening the port resets the board
 $p = New-Object System.IO.Ports.SerialPort 'COM8',115200,'None',8,'one'
 $p.DtrEnable = $false; $p.RtsEnable = $false
 $p.NewLine = "`n"; $p.Open(); Start-Sleep -Milliseconds 400; $p.DiscardInBuffer()
-$p.WriteLine('{"v":3,"cmd":"status"}')
+$p.WriteLine('{"v":4,"cmd":"status"}')
 Start-Sleep -Milliseconds 700; $p.ReadExisting(); $p.Close()
 ```
 
@@ -378,7 +415,7 @@ document previously claimed no weekly header existed. It does; believing
 otherwise left the weekly gauge permanently blank on any setup relying on
 the token path.)
 
-**A reset countdown (`row.left`, `gauge3.reset`) is always formatted as hours
+**A reset countdown (`quota5h.reset`, `quota7d.reset`) is always formatted as hours
 and minutes, never days** — `"76h23m"`, not `"3d4h"`. Multi-day countdowns
 just produce a large hour count. A device or pusher that ever displays a
 day-formatted string is showing a hardcoded literal, not a real reading.
@@ -413,5 +450,5 @@ only needs it to be stable and distinct per session, not globally unique.
 staleness reason above — **key that cache by `sid` too, not one shared file.**
 Two sessions can genuinely be on different models at once; a single cache
 would leak session A's model into session B's display the moment they
-diverge. `gauge1`/`gauge3`/`quiet`, by contrast, are correct to cache
+diverge. `quota5h`/`quota7d`/`quiet`, by contrast, are correct to cache
 globally — they are the same value for every session under one login.

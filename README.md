@@ -1,6 +1,6 @@
 # Clauled
 
-**Latest release:** v3.9.1 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
+**Latest release:** v4.0.0 — see [CHANGELOG.md](CHANGELOG.md). The running firmware reports its own version via the serial status probe.
 
 A small desk gadget built on an ESP32-C3 with an OLED screen that shows your Claude subscription usage at a glance.
 
@@ -61,10 +61,10 @@ All pins configurable in `src/config.h`. Safe GPIOs: 0, 1, 3, 4, 5, 6, 7, 10 —
 | `OLED_MOSI` / `OLED_CLK` / `OLED_DC` / `OLED_RST` / `OLED_CS` | SPI pins |
 | `SDA_PIN` / `SCL_PIN` / `OLED_ADDR` | I2C pins and address |
 | `BUSY_TTL_S` | Spinner self-expires this long after the last activity push (default 90) |
-| `EVENT_TTL_S` | "Your turn" banner self-expires after this (default 300) |
+| `BANNER_TTL_S` | "Your turn" banner self-expires after this (default 300) |
 | `STALE_AFTER_S` | No push for a session this long → shows it as quiet (default 300) |
 | `SESSION_GONE_S` | No push for a session this long → drops it from the roster (default 900) |
-| `UNCONFIRMED_GONE_S` | No title/context EVER shown for a session this long → drops it much sooner (default 120) |
+| `UNCONFIRMED_GONE_S` | No model/context EVER shown for a session this long → drops it much sooner (default 120) |
 | `ROTATE_INTERVAL_S` | Multiple sessions active → cycle this often, also the 5h/1w alternation rate (default 6) |
 | `QUIET_IDLE_S` | No push from ANY session this long **during quiet hours** → panel powers off (default 900) |
 
@@ -109,12 +109,12 @@ A slot only appears if a push actually carries something session-specific (a mod
 Anything that writes to a serial port. See [API.md](API.md) for the protocol, or install [clauled-pusher](https://github.com/Weazool/clauled-pusher) for the real thing.
 
 ```bash
-node -e "const{openSync,writeSync,closeSync,constants:C}=require('fs');const fd=openSync('\\\\\\\\.\\\\COM8',C.O_WRONLY);writeSync(fd,'\n'+JSON.stringify({v:3,gauge2:{label:'Context',pct:74}})+'\n');closeSync(fd)"
+node -e "const{openSync,writeSync,closeSync,constants:C}=require('fs');const fd=openSync('\\\\\\\\.\\\\COM8',C.O_WRONLY);writeSync(fd,'\n'+JSON.stringify({v:4,context:{label:'ctx',pct:74,detail:'740k/1M'}})+'\n');closeSync(fd)"
 ```
 
 ## Troubleshooting
 
-**Screen blank on I2C.** Send `{"v":3,"cmd":"status"}`, check `display_ok`. `false` → confirm 3.3V and that SDA/SCL (GPIO 4/5) aren't swapped.
+**Screen blank on I2C.** Send `{"v":4,"cmd":"status"}`, check `display_ok`. `false` → confirm 3.3V and that SDA/SCL (GPIO 4/5) aren't swapped.
 
 **Garbage on screen.** Almost always SSD1306 mistaken for SH1106.
 
@@ -128,7 +128,7 @@ node -e "const{openSync,writeSync,closeSync,constants:C}=require('fs');const fd=
 
 **Completely dark, not even the sleeping face.** Check `quiet_sleep` on the status probe — `true` means quiet-hours power-down working as intended. Any push wakes it.
 
-**Gauge 1 shows `--`.** No `rate_limits` yet — arrives on a later render.
+**The 5h row shows `--`.** No quota reading yet — arrives on a later render, or from a token refresh.
 
 **Row 1 never alternates, only 5h shows.** No weekly reading has reached the device, so there is nothing to alternate with — this is correct behaviour, not a stuck rotation. Check `quota.alternating` on the status probe (or run `doctor`, which prints it). The weekly figure comes from a statusline payload's `rate_limits` or from the 7d rate-limit headers on an authenticated refresh; if your setup never renders a statusline, a token is what supplies it.
 
